@@ -65,7 +65,9 @@ import {
   Info,
   Trash2,
   Flag,
-  Repeat
+  Repeat,
+  Edit3,
+  Smile
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
@@ -176,6 +178,14 @@ const syncUserPosts = async (uid: string, updates: Partial<Post>) => {
   await Promise.all(snap.docs.map(d => updateDoc(d.ref, updates)));
 };
 
+const MESSAGE_REACTIONS = [
+  { key: 'like', emoji: '👍' },
+  { key: 'love', emoji: '❤️' },
+  { key: 'fire', emoji: '🔥' },
+  { key: 'laugh', emoji: '😂' },
+  { key: 'wow', emoji: '😮' },
+];
+
 // --- Types ---
 
 interface UserProfile {
@@ -190,6 +200,9 @@ interface UserProfile {
   birthdate?: string;
   city?: string;
   hideEmail?: boolean;
+  typing?: boolean;
+  typingTo?: string;
+  typingAt?: Timestamp;
   createdAt: Timestamp;
   followersCount?: number;
   followingCount?: number;
@@ -253,6 +266,11 @@ interface Message {
   replyToText?: string;
   replyToSenderName?: string;
   createdAt: Timestamp;
+  editedAt?: Timestamp;
+  deletedFor?: string[];
+  deletedForAll?: boolean;
+  pinned?: boolean;
+  reactions?: Record<string, string[]>;
   read?: boolean;
 }
 
@@ -361,6 +379,19 @@ const translations = {
     reply: 'Reply',
     replyingTo: 'Replying to',
     cancelReply: 'Cancel reply',
+    reacted: 'Reacted',
+    editMessage: 'Edit message',
+    deleteMessage: 'Delete message',
+    deleteForMe: 'Delete for me',
+    deleteForAll: 'Delete for everyone',
+    messageDeleted: 'Message deleted',
+    messageEdited: 'Message edited',
+    messageRemoved: 'Message removed',
+    pinMessage: 'Pin message',
+    unpinMessage: 'Unpin message',
+    pinnedMessages: 'Pinned messages',
+    typing: 'typing...',
+    edited: 'edited',
     shareCopied: 'Link copied to clipboard!',
     bookmarkAdded: 'Added to bookmarks',
     bookmarkRemoved: 'Removed from bookmarks',
@@ -549,6 +580,19 @@ const translations = {
     reply: 'Ответить',
     replyingTo: 'Ответ на',
     cancelReply: 'Отменить ответ',
+    reacted: 'Реакция',
+    editMessage: 'Редактировать',
+    deleteMessage: 'Удалить',
+    deleteForMe: 'Удалить у меня',
+    deleteForAll: 'Удалить у всех',
+    messageDeleted: 'Сообщение удалено',
+    messageEdited: 'Сообщение изменено',
+    messageRemoved: 'Сообщение удалено',
+    pinMessage: 'Закрепить',
+    unpinMessage: 'Открепить',
+    pinnedMessages: 'Закреплённые',
+    typing: 'печатает...',
+    edited: 'изменено',
     shareCopied: 'Ссылка скопирована!',
     bookmarkAdded: 'Добавлено в закладки',
     bookmarkRemoved: 'Удалено из закладок',
@@ -3438,6 +3482,14 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const listRef = useRef<HTMLDivElement | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const [reactionTarget, setReactionTarget] = useState<string | null>(null);
+  const [deleteMenuId, setDeleteMenuId] = useState<string | null>(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const messageMenuRef = useRef<HTMLDivElement | null>(null);
+  const typingTimeout = useRef<number | null>(null);
 
   useEffect(() => {
     const unsubReceiver = onSnapshot(doc(db, 'users', receiverUid), (d) => {
@@ -3474,6 +3526,40 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   }, [receiverUid, profile]);
 
   useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (selectedMessageId && messageMenuRef.current && !messageMenuRef.current.contains(e.target as Node)) {
+        setSelectedMessageId(null);
+      }
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [selectedMessageId]);
+
+  useEffect(() => {
+    if (!receiver || !profile?.uid) return;
+    const interval = window.setInterval(() => {
+      if (!receiver.typing || receiver.typingTo !== profile.uid || !receiver.typingAt) {
+        setIsTyping(false);
+        return;
+      }
+      const age = Date.now() - receiver.typingAt.toDate().getTime();
+      setIsTyping(age < 5000);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [receiver, profile?.uid]);
+
+  useEffect(() => {
+    return () => {
+      if (!profile) return;
+      updateDoc(doc(db, 'users', profile.uid), {
+        typing: false,
+        typingTo: '',
+        typingAt: serverTimestamp()
+      }).catch(console.error);
+    };
+  }, [profile, receiverUid]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
 
@@ -3503,6 +3589,15 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     await addDoc(collection(db, 'messages'), messageData);
     setText('');
     setReplyTo(null);
+    if (typingTimeout.current) {
+      window.clearTimeout(typingTimeout.current);
+      typingTimeout.current = null;
+    }
+    updateDoc(doc(db, 'users', profile.uid), {
+      typing: false,
+      typingTo: '',
+      typingAt: serverTimestamp()
+    }).catch(console.error);
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3558,6 +3653,89 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     );
   };
 
+  const handleStartEdit = (m: Message) => {
+    setEditingId(m.id);
+    setEditText(m.text || '');
+  };
+
+  const handleSaveEdit = async (m: Message) => {
+    if (!editText.trim()) return;
+    try {
+      await updateDoc(doc(db, 'messages', m.id), { text: editText.trim(), editedAt: serverTimestamp() });
+      showToast(t('messageEdited'), 'success');
+      setEditingId(null);
+      setEditText('');
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const handleDelete = async (m: Message, forAll: boolean) => {
+    if (!profile) return;
+    try {
+      if (forAll) {
+        await updateDoc(doc(db, 'messages', m.id), {
+          deletedForAll: true,
+          text: '',
+          imageUrl: '',
+          replyToText: '',
+          replyToSenderName: ''
+        });
+      } else {
+        await updateDoc(doc(db, 'messages', m.id), {
+          deletedFor: arrayUnion(profile.uid)
+        });
+      }
+      showToast(t('messageDeleted'), 'info');
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    } finally {
+      setDeleteMenuId(null);
+    }
+  };
+
+  const togglePin = async (m: Message) => {
+    try {
+      await updateDoc(doc(db, 'messages', m.id), { pinned: !m.pinned });
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const toggleReaction = async (m: Message, key: string) => {
+    if (!profile) return;
+    const current = m.reactions?.[key] || [];
+    const field = `reactions.${key}`;
+    try {
+      await updateDoc(doc(db, 'messages', m.id), {
+        [field]: current.includes(profile.uid) ? arrayRemove(profile.uid) : arrayUnion(profile.uid)
+      });
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const handleTypingChange = (value: string) => {
+    setText(value);
+    if (!profile) return;
+    updateDoc(doc(db, 'users', profile.uid), {
+      typing: true,
+      typingTo: receiverUid,
+      typingAt: serverTimestamp()
+    }).catch(console.error);
+    if (typingTimeout.current) window.clearTimeout(typingTimeout.current);
+    typingTimeout.current = window.setTimeout(() => {
+      updateDoc(doc(db, 'users', profile.uid), {
+        typing: false,
+        typingTo: '',
+        typingAt: serverTimestamp()
+      }).catch(console.error);
+      typingTimeout.current = null;
+    }, 2500);
+  };
+
+  const pinnedMessages = messages.filter(m => m.pinned && !m.deletedForAll && !(m.deletedFor?.includes(profile?.uid || '')));
+
   return (
     <div className="w-full max-w-3xl mx-auto h-screen flex flex-col bg-white dark:bg-black">
       <div className="p-4 border-b dark:border-zinc-800 flex items-center justify-between bg-white/90 dark:bg-black/90 backdrop-blur-md sticky top-0 z-10">
@@ -3580,6 +3758,18 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                     {t('lastSeen')} {receiver.lastSeen ? formatDistanceToNow(receiver.lastSeen.toDate(), { addSuffix: true }) : t('recently')}
                   </div>
                 )}
+                <AnimatePresence>
+                  {isTyping && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="text-[10px] text-blue-500 font-bold uppercase tracking-widest"
+                    >
+                      {t('typing')}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </div>
           )}
@@ -3588,6 +3778,32 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           <MoreVertical size={20} />
         </button>
       </div>
+
+      <AnimatePresence>
+        {pinnedMessages.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="px-4 pt-3"
+          >
+            <div className="bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-2xl p-3 shadow-sm">
+              <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-2">{t('pinnedMessages')}</div>
+              <div className="space-y-2">
+                {pinnedMessages.slice(0, 3).map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => document.getElementById(`msg-${m.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                    className="w-full text-left text-sm text-gray-700 dark:text-gray-300 line-clamp-1 hover:underline"
+                  >
+                    {m.text || t('messageRemoved')}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div
         ref={listRef}
@@ -3602,9 +3818,11 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             ? idx === 0
             : !isSameDay(prev.createdAt.toDate(), m.createdAt.toDate());
           const showTail = idx === messages.length - 1 || messages[idx + 1].senderUid !== m.senderUid;
+          const isDeletedForMe = m.deletedFor?.includes(profile?.uid || '');
+          const isDeleted = m.deletedForAll || isDeletedForMe;
           
           return (
-            <div key={m.id} className="space-y-3">
+            <div key={m.id} id={`msg-${m.id}`} className="space-y-3">
               {showDate && m.createdAt && (
                 <div className="flex justify-center">
                   <span className="text-[10px] uppercase tracking-widest text-gray-400 bg-white/80 dark:bg-black/60 px-3 py-1 rounded-full border border-gray-100 dark:border-zinc-800">
@@ -3623,9 +3841,25 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                   )}
                 </div>
                 <button
-                  onClick={() => setReplyTo(m)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!isDeleted && editingId !== m.id) {
+                      if (selectedMessageId === m.id) {
+                        setSelectedMessageId(null);
+                      } else {
+                        setSelectedMessageId(m.id);
+                      }
+                    }
+                  }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    if (!isDeleted) {
+                      toggleReaction(m, 'like');
+                    }
+                  }}
                   className={cn(
                     "max-w-[80%] p-3 rounded-2xl text-sm shadow-sm relative text-left transition-all active:scale-[0.99] hover:shadow-md hover:ring-1",
+                    selectedMessageId === m.id && "ring-2 ring-blue-500",
                     isMe 
                       ? "bg-black dark:bg-white text-white dark:text-black rounded-tr-none hover:ring-white/20 dark:hover:ring-black/20" 
                       : "bg-white dark:bg-zinc-800 text-black dark:text-white rounded-tl-none border border-gray-100 dark:border-zinc-700 hover:ring-gray-200 dark:hover:ring-zinc-600"
@@ -3637,7 +3871,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                       isMe ? "right-[-2px] bg-black dark:bg-white" : "left-[-2px] bg-white dark:bg-zinc-800 border-l border-b border-gray-100 dark:border-zinc-700"
                     )} />
                   )}
-                  {m.replyToText && (
+                  {m.replyToText && !isDeleted && (
                     <div className={cn(
                       "mb-2 rounded-xl px-3 py-2 text-[11px] border",
                       isMe
@@ -3658,7 +3892,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                       </div>
                     </div>
                   )}
-                  {m.imageUrl && (
+                  {m.imageUrl && !isDeleted && (
                     <img 
                       src={m.imageUrl} 
                       className="rounded-xl mb-2 max-w-full h-auto cursor-zoom-in" 
@@ -3666,19 +3900,175 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                       onClick={() => onOpenImage(m.imageUrl!)}
                     />
                   )}
-                  {m.text}
+                  <AnimatePresence>
+                    {editingId === m.id ? (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white/5 dark:bg-black/5 rounded-xl p-2 mt-2"
+                      >
+                        <textarea
+                          value={editText}
+                          onChange={(e) => setEditText(e.target.value)}
+                          className="w-full bg-transparent rounded-xl p-2 text-sm focus:outline-none"
+                          rows={3}
+                        />
+                        <div className="flex gap-2 mt-2">
+                          <button
+                            onClick={() => handleSaveEdit(m)}
+                            className="px-3 py-1.5 rounded-full text-xs font-bold bg-black dark:bg-white text-white dark:text-black hover:opacity-80 transition-opacity"
+                          >
+                            {t('save')}
+                          </button>
+                          <button
+                            onClick={() => { setEditingId(null); setEditText(''); }}
+                            className="px-3 py-1.5 rounded-full text-xs font-bold bg-gray-200 dark:bg-zinc-700"
+                          >
+                            {t('cancel')}
+                          </button>
+                        </div>
+                      </motion.div>
+                    ) : (
+                    <div className={cn(isDeleted ? "text-xs italic opacity-70" : "")}>
+                      {isDeleted ? t('messageRemoved') : m.text}
+                    </div>
+                  )}
+                  </AnimatePresence>
                   <div className={cn(
-                    "text-[9px] mt-1 opacity-50 flex items-center gap-1",
-                    isMe ? "justify-end" : "justify-start"
+                    "text-[9px] mt-1 flex items-center gap-1",
+                    isMe ? "justify-end" : "justify-start",
+                    (m.reactions?.['like'] || []).length > 0 ? "opacity-100" : "opacity-30"
                   )}>
+                    {(m.reactions?.['like'] || []).length > 0 && (
+                      <span className="text-red-500">
+                        <Heart size={10} fill="currentColor" />
+                      </span>
+                    )}
                     {m.createdAt ? format(m.createdAt.toDate(), 'HH:mm') : ''}
                     {isMe && (
                       <span className={cn(m.read ? "text-blue-500" : "text-gray-400")}>
                         {m.read ? t('read') : t('sent')}
                       </span>
                     )}
+                    {m.editedAt && !isDeleted && <span>• {t('edited')}</span>}
                   </div>
                 </button>
+                <AnimatePresence>
+                  {!isDeleted && selectedMessageId === m.id && (
+                    <motion.div
+                      initial={{ opacity: 0, x: isMe ? 20 : -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: isMe ? 20 : -20 }}
+                      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                      className={cn("flex items-center gap-1", isMe ? "justify-end" : "justify-start")}
+                    >
+                      <button
+                        onClick={() => { setReplyTo(m); setSelectedMessageId(null); }}
+                        className="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 rounded-full transition-all active:scale-90"
+                      >
+                        <MessageCircle size={16} />
+                      </button>
+                      <button
+                        onClick={() => togglePin(m)}
+                        className={cn(
+                          "p-1.5 text-gray-400 hover:text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-500/10 rounded-full transition-all active:scale-90",
+                          m.pinned ? "text-yellow-500 bg-yellow-50 dark:bg-yellow-500/20" : ""
+                        )}
+                        title={m.pinned ? t('unpinMessage') : t('pinMessage')}
+                      >
+                        <Bookmark size={16} />
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                <AnimatePresence>
+                  {deleteMenuId === m.id && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8, y: 10 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.8, y: 10 }}
+                      transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                      className="flex gap-2 text-[10px]"
+                    >
+                      <button
+                        onClick={() => handleDelete(m, false)}
+                        className="px-2 py-1 rounded-full bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-zinc-700 transition-colors"
+                      >
+                        {t('deleteForMe')}
+                      </button>
+                      {isMe && (
+                        <button
+                          onClick={() => handleDelete(m, true)}
+                          className="px-2 py-1 rounded-full bg-red-500 text-white hover:bg-red-600 transition-colors"
+                        >
+                          {t('deleteForAll')}
+                        </button>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                <AnimatePresence>
+                  {reactionTarget === m.id && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8, y: 10 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.8, y: 10 }}
+                      transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                      className="flex gap-2 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-full px-2 py-1 shadow-lg"
+                    >
+                      {MESSAGE_REACTIONS.map((r) => (
+                        <button
+                          key={r.key}
+                          onClick={() => toggleReaction(m, r.key)}
+                          className={cn(
+                            "text-lg p-1 transition-transform hover:scale-125 active:scale-95",
+                            (m.reactions?.[r.key] || []).includes(profile?.uid || '') ? "opacity-100" : "opacity-60 hover:opacity-100"
+                          )}
+                        >
+                          {r.emoji}
+                        </button>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                <AnimatePresence>
+                  {selectedMessageId === m.id && !isDeleted && (
+                    <motion.div
+                      ref={messageMenuRef}
+                      initial={{ opacity: 0, scale: 0.9, y: -10 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.9, y: -10 }}
+                      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                      className="absolute z-50 mt-1 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-2xl shadow-xl py-2 min-w-[140px]"
+                      style={{
+                        [isMe ? 'right' : 'left']: 0,
+                        top: '100%'
+                      }}
+                    >
+                    <button
+                      onClick={() => { setReplyTo(m); setSelectedMessageId(null); }}
+                      className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-zinc-800 flex items-center gap-2"
+                    >
+                      <MessageCircle size={14} />
+                      {t('reply')}
+                    </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                {m.reactions && Object.keys(m.reactions).length > 0 && (
+                  <div className="flex gap-1 mt-1">
+                    {MESSAGE_REACTIONS.filter(r => (m.reactions?.[r.key] || []).length > 0).map(r => (
+                      <div
+                        key={r.key}
+                        className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-gray-300"
+                      >
+                        {r.emoji} {(m.reactions?.[r.key] || []).length}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -3730,7 +4120,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           </label>
           <input
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => handleTypingChange(e.target.value)}
             placeholder={t('typeMessage')}
             className="flex-1 bg-transparent border-none focus:outline-none text-sm px-2 placeholder:text-gray-400"
             disabled={uploading}
