@@ -68,7 +68,7 @@ import {
   Repeat
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { formatDistanceToNow, format } from 'date-fns';
+import { formatDistanceToNow, format, isSameDay } from 'date-fns';
 
 enum OperationType {
   CREATE = 'create',
@@ -143,6 +143,17 @@ const getAgeFromBirthdate = (birthdate?: string) => {
   const m = now.getMonth() - date.getMonth();
   if (m < 0 || (m === 0 && now.getDate() < date.getDate())) age -= 1;
   return age >= 0 ? age : null;
+};
+
+const formatBirthdateWithAge = (birthdate?: string, t?: (key: TranslationKey) => string) => {
+  if (!birthdate) return '';
+  const date = new Date(birthdate);
+  if (Number.isNaN(date.getTime())) return '';
+  const age = getAgeFromBirthdate(birthdate);
+  const dateLabel = format(date, 'dd.MM.yyyy');
+  if (age === null) return dateLabel;
+  const ageLabel = t ? t('ageYears').replace('{age}', String(age)) : `${age}`;
+  return `${dateLabel} (${ageLabel})`;
 };
 
 const getEmailDisplay = (user: UserProfile, viewerUid: string | undefined, t: (key: TranslationKey) => string) => {
@@ -981,6 +992,9 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   const { t } = useSettings();
   const [trendingPosts, setTrendingPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
+  const [userSearch, setUserSearch] = useState('');
+  const [userResults, setUserResults] = useState<UserProfile[]>([]);
+  const [isUserSearching, setIsUserSearching] = useState(false);
 
   useEffect(() => {
     const q = query(collection(db, 'posts'), orderBy('likes', 'desc'), limit(20));
@@ -995,9 +1009,90 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
     return unsubscribe;
   }, [profile?.blockedUsers]);
 
+  useEffect(() => {
+    if (userSearch.length < 2) {
+      setUserResults([]);
+      return;
+    }
+    setUserResults([]);
+    const normalized = normalizeUsername(userSearch).toLowerCase();
+    const qName = query(
+      collection(db, 'users'),
+      where('displayName', '>=', userSearch),
+      where('displayName', '<=', userSearch + '\uf8ff'),
+      limit(6)
+    );
+    const qUsername = query(
+      collection(db, 'users'),
+      where('usernameLower', '>=', normalized),
+      where('usernameLower', '<=', normalized + '\uf8ff'),
+      limit(6)
+    );
+    const unsubName = onSnapshot(qName, (s) => {
+      const nameResults = s.docs.map(d => d.data() as UserProfile);
+      setUserResults((prev) => {
+        const merged = [...nameResults, ...prev].reduce<UserProfile[]>((acc, u) => {
+          if (!acc.find(p => p.uid === u.uid)) acc.push(u);
+          return acc;
+        }, []);
+        return merged.slice(0, 8);
+      });
+    });
+    const unsubUsername = onSnapshot(qUsername, (s) => {
+      const userResults = s.docs.map(d => d.data() as UserProfile);
+      setUserResults((prev) => {
+        const merged = [...userResults, ...prev].reduce<UserProfile[]>((acc, u) => {
+          if (!acc.find(p => p.uid === u.uid)) acc.push(u);
+          return acc;
+        }, []);
+        return merged.slice(0, 8);
+      });
+    });
+    return () => { unsubName(); unsubUsername(); };
+  }, [userSearch]);
+
   return (
     <div className="max-w-4xl mx-auto py-20 px-4">
-      <h2 className="text-3xl font-bold mb-8 tracking-tight">{t('explore')}</h2>
+      <h2 className="text-3xl font-bold mb-6 tracking-tight">{t('explore')}</h2>
+
+      <div className="md:hidden mb-8">
+        <div className="relative">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+          <input
+            value={userSearch}
+            onChange={(e) => setUserSearch(e.target.value)}
+            onFocus={() => setIsUserSearching(true)}
+            placeholder={t('searchUsers')}
+            className="w-full bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl pl-12 pr-4 py-3 focus:outline-none focus:ring-1 focus:ring-black dark:focus:ring-white transition-all shadow-sm"
+          />
+        </div>
+        {isUserSearching && userSearch.length >= 2 && (
+          <div className="mt-2 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-2xl shadow-xl overflow-hidden">
+            {userResults.length > 0 ? userResults.map(u => (
+              <button
+                key={u.uid}
+                onClick={() => {
+                  onOpenProfile(u.uid);
+                  setUserSearch('');
+                  setIsUserSearching(false);
+                }}
+                className="w-full flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
+              >
+                <img src={u.photoURL} className="w-9 h-9 rounded-full object-cover" referrerPolicy="no-referrer" />
+                <div className="min-w-0">
+                  <div className="text-sm font-bold truncate">{u.displayName}</div>
+                  <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(u, profile?.uid, t)}</div>
+                </div>
+              </button>
+            )) : (
+              <div className="p-4 text-center text-xs text-gray-400">{t('noUsersFound')}</div>
+            )}
+          </div>
+        )}
+        {isUserSearching && (
+          <div className="fixed inset-0 z-[-1]" onClick={() => setIsUserSearching(false)} />
+        )}
+      </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="space-y-6">
@@ -1197,16 +1292,41 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
       setSearchResults([]);
       return;
     }
-    const q = query(
+    setSearchResults([]);
+    const normalized = normalizeUsername(searchQuery).toLowerCase();
+    const qName = query(
       collection(db, 'users'),
       where('displayName', '>=', searchQuery),
       where('displayName', '<=', searchQuery + '\uf8ff'),
       limit(5)
     );
-    const unsubscribe = onSnapshot(q, (s) => {
-      setSearchResults(s.docs.map(d => d.data() as UserProfile));
+    const qUsername = query(
+      collection(db, 'users'),
+      where('usernameLower', '>=', normalized),
+      where('usernameLower', '<=', normalized + '\uf8ff'),
+      limit(5)
+    );
+    const unsubName = onSnapshot(qName, (s) => {
+      const nameResults = s.docs.map(d => d.data() as UserProfile);
+      setSearchResults((prev) => {
+        const merged = [...nameResults, ...prev].reduce<UserProfile[]>((acc, u) => {
+          if (!acc.find(p => p.uid === u.uid)) acc.push(u);
+          return acc;
+        }, []);
+        return merged.slice(0, 7);
+      });
     });
-    return unsubscribe;
+    const unsubUsername = onSnapshot(qUsername, (s) => {
+      const userResults = s.docs.map(d => d.data() as UserProfile);
+      setSearchResults((prev) => {
+        const merged = [...userResults, ...prev].reduce<UserProfile[]>((acc, u) => {
+          if (!acc.find(p => p.uid === u.uid)) acc.push(u);
+          return acc;
+        }, []);
+        return merged.slice(0, 7);
+      });
+    });
+    return () => { unsubName(); unsubUsername(); };
   }, [searchQuery]);
 
   useEffect(() => {
@@ -2620,8 +2740,9 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   if (!targetProfile) return <div className="text-center py-40">{t('userNotFound')}</div>;
   const age = getAgeFromBirthdate(targetProfile.birthdate);
   const editAge = getAgeFromBirthdate(editBirthdate);
+  const birthdateLabel = formatBirthdateWithAge(targetProfile.birthdate, t);
   const profileMetaParts = [
-    age !== null ? t('ageYears').replace('{age}', String(age)) : '',
+    birthdateLabel,
     targetProfile.city?.trim() || ''
   ].filter(Boolean);
   const usernameDisplay = formatUsername(targetProfile.username);
@@ -3272,6 +3393,9 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const [progress, setProgress] = useState(0);
   const [receiver, setReceiver] = useState<UserProfile | null>(null);
   const receiverHandle = receiver ? formatUsername(receiver.username) : '';
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   useEffect(() => {
     const unsubReceiver = onSnapshot(doc(db, 'users', receiverUid), (d) => {
@@ -3306,6 +3430,18 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
       unsubReceiver();
     };
   }, [receiverUid, profile]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length]);
+
+  const handleScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const threshold = 80;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    setIsAtBottom(atBottom);
+  };
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3407,51 +3543,80 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gradient-to-b from-gray-50/80 via-white to-white dark:from-zinc-900/40 dark:via-black dark:to-black">
+      <div
+        ref={listRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto p-4 space-y-4 bg-gradient-to-b from-gray-50/80 via-white to-white dark:from-zinc-900/40 dark:via-black dark:to-black"
+      >
         {messages.map((m, idx) => {
           const isMe = m.senderUid === profile?.uid;
           const showAvatar = idx === 0 || messages[idx-1].senderUid !== m.senderUid;
+          const prev = messages[idx - 1];
+          const showDate = !prev?.createdAt || !m.createdAt
+            ? idx === 0
+            : !isSameDay(prev.createdAt.toDate(), m.createdAt.toDate());
+          const showTail = idx === messages.length - 1 || messages[idx + 1].senderUid !== m.senderUid;
           
           return (
-            <div key={m.id} className={cn("flex gap-2", isMe ? "flex-row-reverse" : "flex-row")}>
-              {!isMe && (
-                <div className="w-8 flex-shrink-0">
-                  {showAvatar && <img src={receiver?.photoURL} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />}
+            <div key={m.id} className="space-y-3">
+              {showDate && m.createdAt && (
+                <div className="flex justify-center">
+                  <span className="text-[10px] uppercase tracking-widest text-gray-400 bg-white/80 dark:bg-black/60 px-3 py-1 rounded-full border border-gray-100 dark:border-zinc-800">
+                    {format(m.createdAt.toDate(), 'dd MMM yyyy')}
+                  </span>
                 </div>
               )}
-              <div className={cn(
-                "max-w-[80%] p-3 rounded-2xl text-sm shadow-sm",
-                isMe 
-                  ? "bg-black dark:bg-white text-white dark:text-black rounded-tr-none" 
-                  : "bg-white dark:bg-zinc-800 text-black dark:text-white rounded-tl-none border border-gray-100 dark:border-zinc-700"
-              )}>
-                {m.imageUrl && (
-                  <img 
-                    src={m.imageUrl} 
-                    className="rounded-xl mb-2 max-w-full h-auto cursor-zoom-in" 
-                    referrerPolicy="no-referrer" 
-                    onClick={() => onOpenImage(m.imageUrl!)}
-                  />
-                )}
-                {m.text}
-                <div className={cn(
-                  "text-[9px] mt-1 opacity-50 flex items-center gap-1",
-                  isMe ? "justify-end" : "justify-start"
-                )}>
-                  {m.createdAt ? format(m.createdAt.toDate(), 'HH:mm') : ''}
-                  {isMe && (
-                    <span className={cn(m.read ? "text-blue-500" : "text-gray-400")}>
-                      {m.read ? t('read') : t('sent')}
-                    </span>
+              <div className={cn("flex gap-2 items-end", isMe ? "flex-row-reverse" : "flex-row")}>
+                <div className="w-8 flex-shrink-0">
+                  {showAvatar && (
+                    <img
+                      src={isMe ? profile?.photoURL : receiver?.photoURL}
+                      className="w-8 h-8 rounded-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
                   )}
+                </div>
+                <div className={cn(
+                  "max-w-[80%] p-3 rounded-2xl text-sm shadow-sm relative",
+                  isMe 
+                    ? "bg-black dark:bg-white text-white dark:text-black rounded-tr-none" 
+                    : "bg-white dark:bg-zinc-800 text-black dark:text-white rounded-tl-none border border-gray-100 dark:border-zinc-700"
+                )}>
+                  {showTail && (
+                    <span className={cn(
+                      "absolute bottom-0 w-2 h-2 rotate-45",
+                      isMe ? "right-[-2px] bg-black dark:bg-white" : "left-[-2px] bg-white dark:bg-zinc-800 border-l border-b border-gray-100 dark:border-zinc-700"
+                    )} />
+                  )}
+                  {m.imageUrl && (
+                    <img 
+                      src={m.imageUrl} 
+                      className="rounded-xl mb-2 max-w-full h-auto cursor-zoom-in" 
+                      referrerPolicy="no-referrer" 
+                      onClick={() => onOpenImage(m.imageUrl!)}
+                    />
+                  )}
+                  {m.text}
+                  <div className={cn(
+                    "text-[9px] mt-1 opacity-50 flex items-center gap-1",
+                    isMe ? "justify-end" : "justify-start"
+                  )}>
+                    {m.createdAt ? format(m.createdAt.toDate(), 'HH:mm') : ''}
+                    {isMe && (
+                      <span className={cn(m.read ? "text-blue-500" : "text-gray-400")}>
+                        {m.read ? t('read') : t('sent')}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           );
         })}
+        <div ref={bottomRef} />
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-4">
-            <div className="p-4 bg-gray-100 dark:bg-zinc-800 rounded-full">
+            <div className="p-4 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-2xl shadow-sm">
               <MessageSquare size={32} />
             </div>
             <p className="text-sm font-medium">{t('startConversation')} {receiver?.displayName}</p>
@@ -3471,7 +3636,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             </div>
           </div>
         )}
-        <div className="flex gap-2 bg-gray-100 dark:bg-zinc-900 rounded-2xl p-2 items-center">
+        <div className="flex gap-2 bg-gray-100 dark:bg-zinc-900 rounded-2xl p-2 items-center shadow-inner">
           <label className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors cursor-pointer">
             <Plus size={20} />
             <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={uploading} />
@@ -3480,18 +3645,26 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder={t('typeMessage')}
-            className="flex-1 bg-transparent border-none focus:outline-none text-sm px-2"
+            className="flex-1 bg-transparent border-none focus:outline-none text-sm px-2 placeholder:text-gray-400"
             disabled={uploading}
           />
           <button 
             type="submit"
             disabled={(!text.trim() && !uploading) || uploading}
-            className="bg-black dark:bg-white text-white dark:text-black p-2 rounded-xl disabled:opacity-30 transition-all hover:scale-105 active:scale-95"
+            className="bg-black dark:bg-white text-white dark:text-black p-2 rounded-xl disabled:opacity-30 transition-all hover:scale-105 active:scale-95 shadow-md"
           >
             <Send size={18} />
           </button>
         </div>
       </form>
+      {!isAtBottom && messages.length > 6 && (
+        <button
+          onClick={() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' })}
+          className="fixed bottom-24 right-4 md:right-8 z-20 bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-full text-xs font-bold shadow-lg"
+        >
+          ↓ {t('messages')}
+        </button>
+      )}
     </div>
   );
 }
@@ -4313,6 +4486,7 @@ function SocialApp() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [likesPostId, setLikesPostId] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(needsOnboarding);
+  const isChatView = view === 'chat';
 
   useEffect(() => {
     setShowOnboarding(needsOnboarding);
@@ -4355,15 +4529,17 @@ function SocialApp() {
 
   return (
       <div className="min-h-screen bg-gray-50 dark:bg-black text-black dark:text-white transition-colors">
-      <Navbar 
-        currentView={view} 
-        setView={setView} 
-        darkMode={darkMode} 
-        setDarkMode={setDarkMode} 
-        onSearchUser={handleOpenProfile}
-      />
+      {!isChatView && (
+        <Navbar 
+          currentView={view} 
+          setView={setView} 
+          darkMode={darkMode} 
+          setDarkMode={setDarkMode} 
+          onSearchUser={handleOpenProfile}
+        />
+      )}
       
-      <main className="pb-24 pt-6 md:pt-16">
+      <main className={cn(isChatView ? "pt-0 pb-0" : "pb-24 pt-6 md:pt-16")}>
         <AnimatePresence mode="wait">
           {view === 'feed' && (
             <Feed 
