@@ -169,6 +169,13 @@ const getUserSecondaryLabel = (user: UserProfile, viewerUid: string | undefined,
   return email || t('emailHidden');
 };
 
+const syncUserPosts = async (uid: string, updates: Partial<Post>) => {
+  const q = query(collection(db, 'posts'), where('authorUid', '==', uid));
+  const snap = await getDocs(q);
+  if (snap.empty) return;
+  await Promise.all(snap.docs.map(d => updateDoc(d.ref, updates)));
+};
+
 // --- Types ---
 
 interface UserProfile {
@@ -242,6 +249,9 @@ interface Message {
   receiverUid: string;
   text: string;
   imageUrl?: string;
+  replyToId?: string;
+  replyToText?: string;
+  replyToSenderName?: string;
   createdAt: Timestamp;
   read?: boolean;
 }
@@ -348,6 +358,9 @@ const translations = {
     markAllReadSuccess: 'All marked as read',
     commentPlaceholder: 'Write a comment...',
     commentsTitle: 'Comments ({count})',
+    reply: 'Reply',
+    replyingTo: 'Replying to',
+    cancelReply: 'Cancel reply',
     shareCopied: 'Link copied to clipboard!',
     bookmarkAdded: 'Added to bookmarks',
     bookmarkRemoved: 'Removed from bookmarks',
@@ -533,6 +546,9 @@ const translations = {
     markAllReadSuccess: 'Все отмечены прочитанными',
     commentPlaceholder: 'Написать комментарий...',
     commentsTitle: 'Комментарии ({count})',
+    reply: 'Ответить',
+    replyingTo: 'Ответ на',
+    cancelReply: 'Отменить ответ',
     shareCopied: 'Ссылка скопирована!',
     bookmarkAdded: 'Добавлено в закладки',
     bookmarkRemoved: 'Удалено из закладок',
@@ -846,6 +862,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const lastProfileSync = useRef<{ photo?: string; name?: string; username?: string }>({});
 
   useEffect(() => {
     const testConnection = async () => {
@@ -896,16 +913,33 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       userDocRef,
       async (docSnap) => {
         if (docSnap.exists()) {
-        const data = docSnap.data() as UserProfile;
-        const normalizedUsername = data.username ? normalizeUsername(data.username) : '';
-        if (data.username && data.username !== normalizedUsername) {
-          updateDoc(userDocRef, {
-            username: normalizedUsername,
-            usernameLower: normalizedUsername.toLowerCase()
-          }).catch(console.error);
-        }
-        setProfile(data);
-        setNeedsOnboarding(!data.username);
+          const data = docSnap.data() as UserProfile;
+          const normalizedUsername = data.username ? normalizeUsername(data.username) : '';
+          if (data.username && data.username !== normalizedUsername) {
+            updateDoc(userDocRef, {
+              username: normalizedUsername,
+              usernameLower: normalizedUsername.toLowerCase()
+            }).catch(console.error);
+          }
+          setProfile(data);
+          const nextSync = {
+            photo: data.photoURL || '',
+            name: data.displayName || '',
+            username: normalizedUsername
+          };
+          const shouldSync =
+            nextSync.photo !== lastProfileSync.current.photo ||
+            nextSync.name !== lastProfileSync.current.name ||
+            nextSync.username !== lastProfileSync.current.username;
+          if (shouldSync && data.uid) {
+            syncUserPosts(data.uid, {
+              authorPhoto: data.photoURL || '',
+              authorName: data.displayName || '',
+              authorUsername: normalizedUsername
+            }).catch(console.error);
+            lastProfileSync.current = nextSync;
+          }
+          setNeedsOnboarding(!data.username);
         } else {
           setProfile(null);
           setNeedsOnboarding(true);
@@ -1484,6 +1518,13 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         </div>
       </div>
     </nav>
+    <button
+      onClick={() => setDarkMode(!darkMode)}
+      className="md:hidden fixed top-4 right-16 z-50 p-3 rounded-2xl border bg-white/90 dark:bg-black/90 backdrop-blur-md shadow-lg text-gray-700 dark:text-gray-200 border-gray-200 dark:border-zinc-800"
+      aria-label={t('theme')}
+    >
+      {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+    </button>
     <button
       onClick={() => setView('notifications')}
       className={cn(
@@ -3396,6 +3437,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
 
   useEffect(() => {
     const unsubReceiver = onSnapshot(doc(db, 'users', receiverUid), (d) => {
@@ -3451,12 +3493,16 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
       senderUid: profile.uid,
       receiverUid,
       text: text.trim(),
+      replyToId: replyTo?.id || '',
+      replyToText: replyTo?.text || '',
+      replyToSenderName: replyTo?.senderUid === profile.uid ? profile.displayName : receiver?.displayName || '',
       createdAt: serverTimestamp(),
       read: false
     };
 
     await addDoc(collection(db, 'messages'), messageData);
     setText('');
+    setReplyTo(null);
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3576,17 +3622,41 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                     />
                   )}
                 </div>
-                <div className={cn(
-                  "max-w-[80%] p-3 rounded-2xl text-sm shadow-sm relative",
-                  isMe 
-                    ? "bg-black dark:bg-white text-white dark:text-black rounded-tr-none" 
-                    : "bg-white dark:bg-zinc-800 text-black dark:text-white rounded-tl-none border border-gray-100 dark:border-zinc-700"
-                )}>
+                <button
+                  onClick={() => setReplyTo(m)}
+                  className={cn(
+                    "max-w-[80%] p-3 rounded-2xl text-sm shadow-sm relative text-left transition-all active:scale-[0.99] hover:shadow-md hover:ring-1",
+                    isMe 
+                      ? "bg-black dark:bg-white text-white dark:text-black rounded-tr-none hover:ring-white/20 dark:hover:ring-black/20" 
+                      : "bg-white dark:bg-zinc-800 text-black dark:text-white rounded-tl-none border border-gray-100 dark:border-zinc-700 hover:ring-gray-200 dark:hover:ring-zinc-600"
+                  )}
+                >
                   {showTail && (
                     <span className={cn(
                       "absolute bottom-0 w-2 h-2 rotate-45",
                       isMe ? "right-[-2px] bg-black dark:bg-white" : "left-[-2px] bg-white dark:bg-zinc-800 border-l border-b border-gray-100 dark:border-zinc-700"
                     )} />
+                  )}
+                  {m.replyToText && (
+                    <div className={cn(
+                      "mb-2 rounded-xl px-3 py-2 text-[11px] border",
+                      isMe
+                        ? "border-white/30 bg-white/10 text-white dark:border-black/10 dark:bg-black/5 dark:text-black"
+                        : "border-gray-200 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/70 text-gray-700 dark:text-gray-300"
+                    )}>
+                      <div className={cn(
+                        "font-bold text-[10px] uppercase tracking-widest",
+                        isMe ? "text-white/80 dark:text-black/70" : "text-gray-500 dark:text-gray-400"
+                      )}>
+                        {t('replyingTo')} {m.replyToSenderName || ''}
+                      </div>
+                      <div className={cn(
+                        "line-clamp-2",
+                        isMe ? "text-white/90 dark:text-black/80" : "text-gray-700 dark:text-gray-200"
+                      )}>
+                        {m.replyToText}
+                      </div>
+                    </div>
                   )}
                   {m.imageUrl && (
                     <img 
@@ -3608,7 +3678,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                       </span>
                     )}
                   </div>
-                </div>
+                </button>
               </div>
             </div>
           );
@@ -3625,6 +3695,23 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
       </div>
 
       <form onSubmit={handleSend} className="p-4 bg-white dark:bg-black border-t dark:border-zinc-800">
+        {replyTo && (
+          <div className="mb-2 px-2">
+            <div className="flex items-center justify-between bg-gray-50 dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-2xl px-3 py-2">
+              <div className="text-[11px] text-gray-500 dark:text-gray-300">
+                {t('replyingTo')} {replyTo.senderUid === profile?.uid ? profile?.displayName : receiver?.displayName}
+                <div className="text-[10px] text-gray-400 line-clamp-1">{replyTo.text}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplyTo(null)}
+                className="text-[10px] text-gray-400 hover:text-red-500"
+              >
+                {t('cancelReply')}
+              </button>
+            </div>
+          </div>
+        )}
         {uploading && (
           <div className="mb-2 px-2">
             <div className="h-1 bg-gray-100 dark:bg-zinc-800 rounded-full overflow-hidden">
