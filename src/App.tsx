@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, createContext, useContext } from 'react';
+import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { 
   signInWithPopup, 
   GoogleAuthProvider, 
@@ -127,6 +127,37 @@ function handleStorageError(error: unknown, path: string) {
   return message;
 }
 
+const normalizeUsername = (value: string) => value.trim().replace(/^@+/, '');
+
+const formatUsername = (value?: string) => {
+  if (!value) return '';
+  return `@${value.replace(/^@+/, '')}`;
+};
+
+const getAgeFromBirthdate = (birthdate?: string) => {
+  if (!birthdate) return null;
+  const date = new Date(birthdate);
+  if (Number.isNaN(date.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - date.getFullYear();
+  const m = now.getMonth() - date.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < date.getDate())) age -= 1;
+  return age >= 0 ? age : null;
+};
+
+const getEmailDisplay = (user: UserProfile, viewerUid: string | undefined, t: (key: TranslationKey) => string) => {
+  if (!user.email) return '';
+  if (user.hideEmail && viewerUid !== user.uid) return t('emailHidden');
+  return user.email;
+};
+
+const getUserSecondaryLabel = (user: UserProfile, viewerUid: string | undefined, t: (key: TranslationKey) => string) => {
+  const handle = formatUsername(user.username);
+  if (handle) return handle;
+  const email = getEmailDisplay(user, viewerUid, t);
+  return email || t('emailHidden');
+};
+
 // --- Types ---
 
 interface UserProfile {
@@ -138,6 +169,9 @@ interface UserProfile {
   photoURL: string;
   headerURL?: string;
   bio?: string;
+  birthdate?: string;
+  city?: string;
+  hideEmail?: boolean;
   createdAt: Timestamp;
   followersCount?: number;
   followingCount?: number;
@@ -159,6 +193,7 @@ interface Post {
   authorUid: string;
   authorName: string;
   authorPhoto: string;
+  authorUsername?: string;
   content: string;
   imageUrl?: string;
   imageUrls?: string[];
@@ -230,8 +265,12 @@ const translations = {
     next: 'Next',
     back: 'Back',
     step: 'Step',
+    stepWelcome: 'Welcome',
+    stepUsername: 'Username',
+    stepName: 'Name',
+    stepMedia: 'Media',
     chooseUsername: 'Choose a unique username',
-    usernameHint: 'Only letters, numbers, and underscore. 3–20 chars.',
+    usernameHint: 'Only letters, numbers, and underscore. 3–20 chars. You can start with @.',
     usernamePlaceholder: 'e.g. zimo_user',
     checking: 'Checking...',
     usernameTaken: 'That username is taken',
@@ -246,8 +285,14 @@ const translations = {
     welcomeDone: 'All set!',
     welcomeMessage: 'Welcome to Zimo.',
     uploadNote: 'Uploads are stored locally in posts (limited size).',
+    uploadLimitsTitle: 'Photo limits',
+    uploadLimitsBody: 'Max {size} and {dim}px per image. Larger photos are compressed.',
+    uploadLimitsNote: 'Storage is disabled. Images are saved inside posts.',
     urlInvalid: 'URL must start with http:// or https://',
     imageTooLarge: 'Image is too large after compression',
+    fileReadFailed: 'Could not read the file',
+    imageDecodeFailed: 'Could not process the image',
+    canvasNotSupported: 'Your browser does not support image processing',
     uploadFailed: 'Upload failed',
     add: 'Add',
     post: 'Post',
@@ -256,10 +301,15 @@ const translations = {
     postPlaceholder: "What's on your mind?",
     dismiss: 'Dismiss',
     clear: 'Clear',
+    save: 'Save',
+    cancel: 'Cancel',
+    on: 'On',
+    off: 'Off',
     bioPlaceholder: 'Tell us about yourself...',
     global: 'Global',
     followingTab: 'Following',
     results: 'results',
+    postsCount: '{count} posts',
     trending: 'Trending',
     noTrends: 'No trends yet',
     proTip: 'Pro Tip',
@@ -286,7 +336,11 @@ const translations = {
     notificationsCleared: 'Notifications cleared',
     markAllReadSuccess: 'All marked as read',
     commentPlaceholder: 'Write a comment...',
+    commentsTitle: 'Comments ({count})',
     shareCopied: 'Link copied to clipboard!',
+    bookmarkAdded: 'Added to bookmarks',
+    bookmarkRemoved: 'Removed from bookmarks',
+    bookmarkFailed: 'Failed to bookmark',
     repostConfirm: 'Repost this post?',
     reposted: 'Post reposted!',
     quoteReposted: 'Quote reposted!',
@@ -301,18 +355,25 @@ const translations = {
     reportConfirm: 'Report this post for inappropriate content?',
     reportPost: 'Report Post',
     reportSuccess: 'Post reported. Thank you for keeping our community safe.',
+    reportFailed: 'Failed to report post',
     deletePostConfirm: 'Delete this post?',
     postDeleted: 'Post deleted',
     deletePostFailed: 'Failed to delete post',
     updatePostSuccess: 'Post updated',
     updatePostFailed: 'Failed to update post',
+    repostFailed: 'Failed to repost',
     commentDeleted: 'Comment deleted',
     commentDeleteFailed: 'Failed to delete comment',
+    postFailed: 'Failed to post: {error}',
+    bioUpdateFailed: 'Failed to update bio: {error}',
+    avatarUploadFailed: 'Avatar upload failed: {error}',
+    headerUploadFailed: 'Header upload failed: {error}',
     online: 'Online',
     lastSeen: 'Last seen',
     recently: 'recently',
     typeMessage: 'Type a message...',
     startConversation: 'Start a conversation with',
+    recentChats: 'Recent chats',
     sent: 'Sent',
     read: 'Read',
     communityStats: 'Community Stats',
@@ -326,6 +387,7 @@ const translations = {
     interactedMessage: 'interacted with you',
     searchPeople: 'Search people...',
     noComments: 'No comments yet. Be the first to comment!',
+    justNow: 'Just now',
     failedClearNotifications: 'Failed to clear notifications',
     failedMarkRead: 'Failed to mark as read',
     blockConfirm: 'Block {name}? This user’s posts will be hidden from your feed.',
@@ -336,6 +398,30 @@ const translations = {
     unblockFailed: 'Failed to unblock user',
     whoToFollow: 'Who to follow',
     followingTitle: 'Following',
+    imageUrlPlaceholder: 'https://example.com/image.jpg',
+    googleAccount: 'Google Account',
+    settingsShort: 'SET',
+    profileInfo: 'Profile info',
+    displayNameLabel: 'Name',
+    bioLabel: 'Bio',
+    birthdateLabel: 'Birthday',
+    cityLabel: 'City',
+    ageYears: '{age} yrs',
+    emailHidden: 'Email hidden',
+    hideEmailLabel: 'Hide my email',
+    hideEmailHint: 'Other users will not see your email in lists or profiles.',
+    notificationsToggle: 'Notifications',
+    notificationsHint: 'Show badges and in-app notification popups.',
+    toastsToggle: 'Pop-up messages',
+    toastsHint: 'Show quick success/error banners at the top.',
+    profileSaved: 'Profile updated',
+    messagesSubtitle: 'Stay close to your people and keep the conversation flowing.',
+    noRecentChats: 'No recent chats yet',
+    oops: 'Oops!',
+    somethingWrong: 'Something went wrong.',
+    securityError: "Security Error: You don't have permission to {operation} at {path}. Please check your rules.",
+    reloadApp: 'Reload app',
+    genericError: 'Something went wrong. Please try again.',
   },
   ru: {
     searchUsers: 'Поиск пользователей...',
@@ -364,8 +450,12 @@ const translations = {
     next: 'Далее',
     back: 'Назад',
     step: 'Шаг',
+    stepWelcome: 'Старт',
+    stepUsername: 'Юзернейм',
+    stepName: 'Имя',
+    stepMedia: 'Медиа',
     chooseUsername: 'Придумайте уникальный юзернейм',
-    usernameHint: 'Только буквы, цифры и _. 3–20 символов.',
+    usernameHint: 'Только буквы, цифры и _. 3–20 символов. Можно начать с @.',
     usernamePlaceholder: 'например: zimo_user',
     checking: 'Проверяем...',
     usernameTaken: 'Юзернейм занят',
@@ -380,8 +470,14 @@ const translations = {
     welcomeDone: 'Готово!',
     welcomeMessage: 'Добро пожаловать в Zimo.',
     uploadNote: 'Загрузка хранится прямо в постах (ограниченный размер).',
+    uploadLimitsTitle: 'Лимиты фото',
+    uploadLimitsBody: 'Максимум {size} и {dim}px на фото. Большие изображения сжимаются.',
+    uploadLimitsNote: 'Storage выключен. Картинки сохраняются внутри постов.',
     urlInvalid: 'URL должен начинаться с http:// или https://',
     imageTooLarge: 'Изображение слишком большое после сжатия',
+    fileReadFailed: 'Не удалось прочитать файл',
+    imageDecodeFailed: 'Не удалось обработать изображение',
+    canvasNotSupported: 'Ваш браузер не поддерживает обработку изображений',
     uploadFailed: 'Не удалось загрузить',
     add: 'Добавить',
     post: 'Опубликовать',
@@ -390,10 +486,15 @@ const translations = {
     postPlaceholder: 'О чём хотите рассказать?',
     dismiss: 'Скрыть',
     clear: 'Очистить',
+    save: 'Сохранить',
+    cancel: 'Отмена',
+    on: 'Вкл',
+    off: 'Выкл',
     bioPlaceholder: 'Расскажите о себе...',
     global: 'Все',
     followingTab: 'Подписки',
     results: 'результаты',
+    postsCount: '{count} постов',
     trending: 'Тренды',
     noTrends: 'Пока нет трендов',
     proTip: 'Подсказка',
@@ -420,7 +521,11 @@ const translations = {
     notificationsCleared: 'Уведомления очищены',
     markAllReadSuccess: 'Все отмечены прочитанными',
     commentPlaceholder: 'Написать комментарий...',
+    commentsTitle: 'Комментарии ({count})',
     shareCopied: 'Ссылка скопирована!',
+    bookmarkAdded: 'Добавлено в закладки',
+    bookmarkRemoved: 'Удалено из закладок',
+    bookmarkFailed: 'Не удалось добавить в закладки',
     repostConfirm: 'Сделать репост?',
     reposted: 'Репост опубликован!',
     quoteReposted: 'Цитата опубликована!',
@@ -435,18 +540,25 @@ const translations = {
     reportConfirm: 'Пожаловаться на этот пост?',
     reportPost: 'Пожаловаться',
     reportSuccess: 'Пост отправлен на проверку. Спасибо!',
+    reportFailed: 'Не удалось отправить жалобу',
     deletePostConfirm: 'Удалить этот пост?',
     postDeleted: 'Пост удалён',
     deletePostFailed: 'Не удалось удалить пост',
     updatePostSuccess: 'Пост обновлён',
     updatePostFailed: 'Не удалось обновить пост',
+    repostFailed: 'Не удалось сделать репост',
     commentDeleted: 'Комментарий удалён',
     commentDeleteFailed: 'Не удалось удалить комментарий',
+    postFailed: 'Не удалось опубликовать: {error}',
+    bioUpdateFailed: 'Не удалось обновить био: {error}',
+    avatarUploadFailed: 'Не удалось загрузить аватар: {error}',
+    headerUploadFailed: 'Не удалось загрузить баннер: {error}',
     online: 'В сети',
     lastSeen: 'Был(а)',
     recently: 'недавно',
     typeMessage: 'Написать сообщение...',
     startConversation: 'Начните диалог с',
+    recentChats: 'Недавние чаты',
     sent: 'Отправлено',
     read: 'Прочитано',
     communityStats: 'Статистика сообщества',
@@ -460,6 +572,7 @@ const translations = {
     interactedMessage: 'взаимодействовал с вами',
     searchPeople: 'Поиск людей...',
     noComments: 'Пока нет комментариев. Будьте первым!',
+    justNow: 'Только что',
     failedClearNotifications: 'Не удалось очистить уведомления',
     failedMarkRead: 'Не удалось отметить прочитанными',
     blockConfirm: 'Заблокировать {name}? Его посты будут скрыты.',
@@ -470,6 +583,30 @@ const translations = {
     unblockFailed: 'Не удалось разблокировать пользователя',
     whoToFollow: 'Кого читать',
     followingTitle: 'Подписки',
+    imageUrlPlaceholder: 'https://example.com/image.jpg',
+    googleAccount: 'Аккаунт Google',
+    settingsShort: 'НАСТ',
+    profileInfo: 'Профиль',
+    displayNameLabel: 'Имя',
+    bioLabel: 'Био',
+    birthdateLabel: 'Дата рождения',
+    cityLabel: 'Город',
+    ageYears: '{age} лет',
+    emailHidden: 'Почта скрыта',
+    hideEmailLabel: 'Скрыть мою почту',
+    hideEmailHint: 'Другие пользователи не увидят вашу почту в списках и профиле.',
+    notificationsToggle: 'Уведомления',
+    notificationsHint: 'Показывать бейджи и всплывающие уведомления.',
+    toastsToggle: 'Всплывающие сообщения',
+    toastsHint: 'Показывать быстрые подсказки вверху.',
+    profileSaved: 'Профиль обновлён',
+    messagesSubtitle: 'Оставайтесь на связи и продолжайте диалоги.',
+    noRecentChats: 'Пока нет недавних чатов',
+    oops: 'Упс!',
+    somethingWrong: 'Что-то пошло не так.',
+    securityError: 'Ошибка доступа: нет прав на {operation} по пути {path}. Проверьте правила.',
+    reloadApp: 'Перезагрузить',
+    genericError: 'Что-то пошло не так. Попробуйте снова.',
   },
 } as const;
 
@@ -479,13 +616,21 @@ const STORAGE_ENABLED = false;
 const MAX_IMAGE_BYTES = 700 * 1024;
 const MAX_IMAGE_DIM = 1280;
 
+const formatBytes = (bytes: number) => {
+  if (bytes < 1024) return `${bytes}B`;
+  const kb = Math.round(bytes / 1024);
+  if (kb < 1024) return `${kb}KB`;
+  const mb = (kb / 1024).toFixed(1);
+  return `${mb}MB`;
+};
+
 const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: number }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('File read failed'));
+    reader.onerror = () => reject(new Error('file_read_failed'));
     reader.onload = () => {
       const img = new Image();
-      img.onerror = () => reject(new Error('Image decode failed'));
+      img.onerror = () => reject(new Error('image_decode_failed'));
       img.onload = () => {
         const scale = Math.min(1, MAX_IMAGE_DIM / Math.max(img.width, img.height));
         const width = Math.round(img.width * scale);
@@ -494,7 +639,7 @@ const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: num
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
-        if (!ctx) return reject(new Error('Canvas not supported'));
+        if (!ctx) return reject(new Error('canvas_not_supported'));
         ctx.drawImage(img, 0, 0, width, height);
         const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
         const bytes = Math.round((dataUrl.length * 3) / 4);
@@ -514,6 +659,41 @@ const getDefaultLanguage = (): Language => {
   return 'en';
 };
 
+const getImageErrorMessage = (error: unknown, t: (key: TranslationKey) => string) => {
+  const message = error instanceof Error ? error.message : String(error);
+  switch (message) {
+    case 'file_read_failed':
+      return t('fileReadFailed');
+    case 'image_decode_failed':
+      return t('imageDecodeFailed');
+    case 'canvas_not_supported':
+      return t('canvasNotSupported');
+    default:
+      return t('genericError');
+  }
+};
+
+function PhotoLimitsNotice({ className }: { className?: string }) {
+  const { t } = useSettings();
+  const sizeLabel = formatBytes(MAX_IMAGE_BYTES);
+  const body = t('uploadLimitsBody')
+    .replace('{size}', sizeLabel)
+    .replace('{dim}', String(MAX_IMAGE_DIM));
+
+  return (
+    <div className={cn("flex items-start gap-3 rounded-2xl border border-gray-100 dark:border-zinc-800 bg-gray-50/70 dark:bg-zinc-900/60 p-3", className)}>
+      <div className="mt-0.5 w-7 h-7 rounded-xl bg-white dark:bg-zinc-800 border border-gray-100 dark:border-zinc-700 flex items-center justify-center text-gray-500 dark:text-gray-300">
+        <Info size={14} />
+      </div>
+      <div>
+        <div className="text-xs font-semibold text-gray-800 dark:text-gray-100">{t('uploadLimitsTitle')}</div>
+        <div className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">{body}</div>
+        <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">{t('uploadLimitsNote')}</div>
+      </div>
+    </div>
+  );
+}
+
 type View = 'feed' | 'profile' | 'messages' | 'chat' | 'notifications' | 'post_detail' | 'user_profile' | 'explore' | 'bookmarks';
 
 // --- Context ---
@@ -530,8 +710,10 @@ const ToastContext = createContext<{
 
 function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const { toastsEnabled } = useSettings();
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    if (!toastsEnabled) return;
     const id = Math.random().toString(36).substr(2, 9);
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => {
@@ -542,12 +724,12 @@ function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 w-full max-w-xs px-4">
+      <div className="fixed top-20 md:top-24 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 w-full max-w-xs px-4">
         <AnimatePresence>
           {toasts.map(toast => (
             <motion.div
               key={toast.id}
-              initial={{ opacity: 0, y: 20, scale: 0.9 }}
+              initial={{ opacity: 0, y: -12, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
               className={cn(
@@ -589,6 +771,10 @@ const SettingsContext = createContext<{
   setDarkMode: (v: boolean) => void;
   language: Language;
   setLanguage: (l: Language) => void;
+  notificationsEnabled: boolean;
+  setNotificationsEnabled: (v: boolean) => void;
+  toastsEnabled: boolean;
+  setToastsEnabled: (v: boolean) => void;
   t: (key: TranslationKey) => string;
 } | null>(null);
 
@@ -608,6 +794,14 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
     if (stored === 'en' || stored === 'ru') return stored;
     return getDefaultLanguage();
   });
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    const stored = localStorage.getItem('app_notifications');
+    return stored ? stored === 'on' : true;
+  });
+  const [toastsEnabled, setToastsEnabled] = useState(() => {
+    const stored = localStorage.getItem('app_toasts');
+    return stored ? stored === 'on' : true;
+  });
 
   useEffect(() => {
     if (darkMode) document.documentElement.classList.add('dark');
@@ -619,10 +813,18 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('app_language', language);
   }, [language]);
 
+  useEffect(() => {
+    localStorage.setItem('app_notifications', notificationsEnabled ? 'on' : 'off');
+  }, [notificationsEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('app_toasts', toastsEnabled ? 'on' : 'off');
+  }, [toastsEnabled]);
+
   const t = (key: TranslationKey) => translations[language][key] || translations.en[key] || key;
 
   return (
-    <SettingsContext.Provider value={{ darkMode, setDarkMode, language, setLanguage, t }}>
+    <SettingsContext.Provider value={{ darkMode, setDarkMode, language, setLanguage, notificationsEnabled, setNotificationsEnabled, toastsEnabled, setToastsEnabled, t }}>
       {children}
     </SettingsContext.Provider>
   );
@@ -683,9 +885,16 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       userDocRef,
       async (docSnap) => {
         if (docSnap.exists()) {
-          const data = docSnap.data() as UserProfile;
-          setProfile(data);
-          setNeedsOnboarding(!data.username);
+        const data = docSnap.data() as UserProfile;
+        const normalizedUsername = data.username ? normalizeUsername(data.username) : '';
+        if (data.username && data.username !== normalizedUsername) {
+          updateDoc(userDocRef, {
+            username: normalizedUsername,
+            usernameLower: normalizedUsername.toLowerCase()
+          }).catch(console.error);
+        }
+        setProfile(data);
+        setNeedsOnboarding(!data.username);
         } else {
           setProfile(null);
           setNeedsOnboarding(true);
@@ -950,7 +1159,7 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
               <img src={user.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
               <div className="min-w-0">
                 <div className="text-sm font-bold truncate">{user.displayName}</div>
-                <div className="text-[10px] text-gray-400 truncate">{user.email}</div>
+                <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(user, profile?.uid, t)}</div>
               </div>
             </button>
             <button 
@@ -973,13 +1182,15 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
   setDarkMode: (d: boolean) => void,
   onSearchUser: (uid: string) => void
 }) {
-  const { t } = useSettings();
+  const { t, notificationsEnabled } = useSettings();
   const { logout, profile } = useAuth();
+  const { showToast } = useToast();
   const [unreadCount, setUnreadCount] = useState(0);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const lastNotificationId = useRef<string | null>(null);
 
   useEffect(() => {
     if (searchQuery.length < 2) {
@@ -999,7 +1210,10 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
   }, [searchQuery]);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || !notificationsEnabled) {
+      setUnreadCount(0);
+      return;
+    }
     const q = query(
       collection(db, 'notifications'), 
       where('toUid', '==', profile.uid),
@@ -1007,7 +1221,44 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
     );
     const unsubscribe = onSnapshot(q, (s) => setUnreadCount(s.size));
     return unsubscribe;
-  }, [profile]);
+  }, [profile, notificationsEnabled]);
+
+  useEffect(() => {
+    if (!profile || !notificationsEnabled) {
+      lastNotificationId.current = null;
+      return;
+    }
+    const q = query(
+      collection(db, 'notifications'),
+      where('toUid', '==', profile.uid),
+      orderBy('createdAt', 'desc'),
+      limit(1)
+    );
+    const unsubscribe = onSnapshot(q, (s) => {
+      const docSnap = s.docs[0];
+      if (!docSnap) return;
+      const id = docSnap.id;
+      if (!lastNotificationId.current) {
+        lastNotificationId.current = id;
+        return;
+      }
+      if (id !== lastNotificationId.current) {
+        const n = docSnap.data() as Notification;
+        const message = n.type === 'like'
+          ? t('likeMessage')
+          : n.type === 'comment'
+            ? t('commentMessage')
+            : n.type === 'follow'
+              ? t('followMessage')
+              : n.type === 'repost'
+                ? t('repostMessage')
+                : t('interactedMessage');
+        showToast(`${n.fromName} ${message}`, 'info');
+        lastNotificationId.current = id;
+      }
+    });
+    return unsubscribe;
+  }, [profile, notificationsEnabled, showToast, t]);
 
   useEffect(() => {
     if (!profile) return;
@@ -1023,13 +1274,14 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
   const navItems = [
     { id: 'feed', icon: Home, label: t('feed') },
     { id: 'explore', icon: Compass, label: t('explore') },
-    { id: 'notifications', icon: Bell, label: t('notifications'), badge: unreadCount },
+    { id: 'notifications', icon: Bell, label: t('notifications'), badge: notificationsEnabled ? unreadCount : 0 },
     { id: 'bookmarks', icon: Bookmark, label: t('bookmarks') },
     { id: 'messages', icon: MessageSquare, label: t('messages'), badge: unreadMessagesCount },
     { id: 'profile', icon: profile?.photoURL ? () => <img src={profile.photoURL} className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" /> : User, label: t('profile') },
   ];
 
   return (
+    <>
     <nav className="fixed bottom-0 left-0 right-0 md:top-0 md:bottom-auto bg-white/80 dark:bg-black/80 backdrop-blur-md border-t md:border-t-0 md:border-b border-gray-200 dark:border-gray-800 z-50">
       <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
         <div className="hidden md:block font-bold text-xl tracking-tighter cursor-pointer" onClick={() => setView('feed')}>ZIMO</div>
@@ -1063,11 +1315,11 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
                     className="w-full flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
                   >
                     <img src={u.photoURL} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
-                    <div className="min-w-0">
-                      <div className="text-sm font-bold truncate">{u.displayName}</div>
-                      <div className="text-[10px] text-gray-400 truncate">{u.email}</div>
-                    </div>
-                  </button>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold truncate">{u.displayName}</div>
+                    <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(u, profile?.uid, t)}</div>
+                  </div>
+                </button>
                 )) : (
                   <div className="p-4 text-center text-xs text-gray-400">{t('noUsersFound')}</div>
                 )}
@@ -1080,23 +1332,27 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         </div>
 
         <div className="flex flex-1 justify-around md:justify-center md:gap-8">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setView(item.id as View)}
-              className={cn(
-                "p-2 transition-colors relative",
-                currentView === item.id ? "text-black dark:text-white" : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-              )}
-            >
-              {typeof item.icon === 'function' ? <item.icon /> : <item.icon size={24} />}
-              {item.badge ? (
-                <span className="absolute top-1 right-1 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] border-2 border-white dark:border-black">
-                  {item.badge > 9 ? '9+' : item.badge}
-                </span>
-              ) : null}
-            </button>
-          ))}
+          {navItems.map((item) => {
+            const hideOnMobile = item.id === 'notifications';
+            return (
+              <button
+                key={item.id}
+                onClick={() => setView(item.id as View)}
+                className={cn(
+                  "p-2 transition-colors relative",
+                  hideOnMobile ? "hidden md:inline-flex" : "inline-flex",
+                  currentView === item.id ? "text-black dark:text-white" : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                )}
+              >
+                {typeof item.icon === 'function' ? <item.icon /> : <item.icon size={24} />}
+                {item.badge ? (
+                  <span className="absolute top-1 right-1 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] border-2 border-white dark:border-black">
+                    {item.badge > 9 ? '9+' : item.badge}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
         <div className="flex items-center gap-4">
           <button onClick={() => setDarkMode(!darkMode)} className="p-2 text-gray-500 hover:text-black dark:hover:text-white transition-colors">
@@ -1108,6 +1364,24 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         </div>
       </div>
     </nav>
+    <button
+      onClick={() => setView('notifications')}
+      className={cn(
+        "md:hidden fixed top-4 right-4 z-50 p-3 rounded-2xl border bg-white/90 dark:bg-black/90 backdrop-blur-md shadow-lg transition-colors",
+        notificationsEnabled ? "border-gray-200 dark:border-zinc-800 text-gray-700 dark:text-gray-200" : "border-gray-100 dark:border-zinc-900 text-gray-300 dark:text-gray-600"
+      )}
+      aria-label={t('notifications')}
+    >
+      <div className="relative">
+        <Bell size={20} />
+        {notificationsEnabled && unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] border-2 border-white dark:border-black">
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
+        )}
+      </div>
+    </button>
+    </>
   );
 }
 
@@ -1199,16 +1473,16 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         await updateDoc(userRef, {
           bookmarks: arrayRemove(post.id)
         });
-        showToast("Removed from bookmarks", "info");
+        showToast(t('bookmarkRemoved'), "info");
       } else {
         await updateDoc(userRef, {
           bookmarks: arrayUnion(post.id)
         });
-        showToast("Added to bookmarks", "success");
+        showToast(t('bookmarkAdded'), "success");
       }
     } catch (err) {
       console.error("Error bookmarking post:", err);
-      showToast("Failed to bookmark", "error");
+      showToast(t('bookmarkFailed'), "error");
     }
   };
 
@@ -1299,7 +1573,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         });
         showToast(t('reportSuccess'), "success");
       } catch (err) {
-        showToast("Failed to report post", "error");
+        showToast(t('reportFailed'), "error");
       }
     }
   };
@@ -1318,6 +1592,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         authorUid: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
+        authorUsername: profile.username ? normalizeUsername(profile.username) : '',
         content: repostText.trim(),
         repostId: post.id,
         createdAt: serverTimestamp(),
@@ -1348,7 +1623,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       showToast(repostText.trim() ? t('quoteReposted') : t('reposted'), "success");
     } catch (err) {
       console.error("Error reposting:", err);
-      showToast("Failed to repost", "error");
+      showToast(t('repostFailed'), "error");
     } finally {
       setIsReposting(false);
     }
@@ -1403,7 +1678,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       exit={{ opacity: 0, scale: 0.95 }}
       onClick={() => !isEditing && onOpen?.(post)}
       className={cn(
-        "bg-white dark:bg-zinc-900 p-5 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-sm group transition-all",
+        "bg-white dark:bg-zinc-900 p-4 sm:p-5 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-sm group transition-all",
         onOpen && !isEditing ? "hover:border-gray-300 dark:hover:border-zinc-600 cursor-pointer" : ""
       )}
     >
@@ -1421,8 +1696,11 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           <img src={post.authorPhoto || 'https://picsum.photos/seed/user/100/100'} className="w-11 h-11 rounded-full object-cover border border-gray-100 dark:border-zinc-800" referrerPolicy="no-referrer" />
           <div>
             <div className="font-bold text-sm tracking-tight">{post.authorName}</div>
+            {post.authorUsername && (
+              <div className="text-[10px] text-gray-400">{formatUsername(post.authorUsername)}</div>
+            )}
             <div className="text-[11px] text-gray-400 font-medium">
-              {post.createdAt ? formatDistanceToNow(post.createdAt.toDate(), { addSuffix: true }) : 'Just now'}
+              {post.createdAt ? formatDistanceToNow(post.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
             </div>
           </div>
         </button>
@@ -1454,6 +1732,9 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           <div className="flex items-center gap-2 mb-2">
             <img src={repostedPost.authorPhoto} className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" />
             <span className="font-bold text-xs">{repostedPost.authorName}</span>
+            {repostedPost.authorUsername && (
+              <span className="text-[10px] text-gray-400">{formatUsername(repostedPost.authorUsername)}</span>
+            )}
             <span className="text-[10px] text-gray-400">
               {repostedPost.createdAt ? formatDistanceToNow(repostedPost.createdAt.toDate(), { addSuffix: true }) : ''}
             </span>
@@ -1480,12 +1761,12 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
             rows={3}
           />
           <div className="flex gap-2 mt-2">
-            <button onClick={handleUpdate} className="flex-1 bg-black dark:bg-white text-white dark:text-black py-1.5 rounded-lg text-xs font-bold">Save</button>
-            <button onClick={() => setIsEditing(false)} className="flex-1 bg-gray-100 dark:bg-zinc-800 py-1.5 rounded-lg text-xs font-bold">Cancel</button>
+            <button onClick={handleUpdate} className="flex-1 bg-black dark:bg-white text-white dark:text-black py-1.5 rounded-lg text-xs font-bold">{t('save')}</button>
+            <button onClick={() => setIsEditing(false)} className="flex-1 bg-gray-100 dark:bg-zinc-800 py-1.5 rounded-lg text-xs font-bold">{t('cancel')}</button>
           </div>
         </div>
       ) : (
-        <p className="text-[15px] text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed mb-4">
+        <p className="text-[16px] sm:text-[15px] text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed mb-4">
           {renderContent(post.content)}
         </p>
       )}
@@ -1657,7 +1938,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
                     disabled={isReposting}
                     className="flex-1 bg-gray-100 dark:bg-zinc-800 py-2 rounded-xl text-xs font-bold disabled:opacity-50"
                   >
-                    Cancel
+                    {t('cancel')}
                   </button>
                   <button
                     onClick={handleConfirmRepost}
@@ -1760,6 +2041,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         authorUid: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
+        authorUsername: profile.username ? normalizeUsername(profile.username) : '',
         content: content.trim(),
         imageUrls: imageUrls.filter(url => url.trim() !== ''),
         createdAt: serverTimestamp(),
@@ -1769,8 +2051,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       setContent('');
       setImageUrls([]);
     } catch (err) {
-      const errInfo = handleFirestoreError(err, OperationType.CREATE, 'posts');
-      setError(`Failed to post: ${errInfo.error}`);
+      handleFirestoreError(err, OperationType.CREATE, 'posts');
+      setError(t('postFailed').replace('{error}', t('genericError')));
     }
   };
 
@@ -1795,7 +2077,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       }
       setImageUrls(prev => [...prev, ...newUrls]);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getImageErrorMessage(err, t);
       setError(`${t('uploadFailed')}: ${msg}`);
     } finally {
       setUploading(false);
@@ -1968,12 +2250,14 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               <span className="text-xs text-gray-400">{content.length}/1000</span>
             </div>
 
+            <PhotoLimitsNotice />
+
             {!STORAGE_ENABLED && (
               <div className="flex gap-2">
                 <input
                   value={imageUrlInput}
                   onChange={(e) => setImageUrlInput(e.target.value)}
-                  placeholder="https://example.com/image.jpg"
+                  placeholder={t('imageUrlPlaceholder')}
                   className="flex-1 bg-gray-50 dark:bg-zinc-800 rounded-full px-4 py-2 text-xs focus:outline-none border dark:border-zinc-700"
                 />
                 <button
@@ -2026,7 +2310,9 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                 className="group cursor-pointer"
               >
                 <div className="text-sm font-bold text-black dark:text-white group-hover:underline">{tag}</div>
-                <div className="text-[10px] text-gray-400 uppercase tracking-widest">{count} posts</div>
+                <div className="text-[10px] text-gray-400 uppercase tracking-widest">
+                  {t('postsCount').replace('{count}', String(count))}
+                </div>
               </div>
             )) : (
               <div className="text-sm text-gray-400">{t('noTrends')}</div>
@@ -2057,13 +2343,19 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   onShowLikes: (postId: string) => void,
   key?: string
 }) {
-  const { darkMode, setDarkMode, language, setLanguage, t } = useSettings();
+  const { darkMode, setDarkMode, language, setLanguage, notificationsEnabled, setNotificationsEnabled, toastsEnabled, setToastsEnabled, t } = useSettings();
   const { profile: currentProfile } = useAuth();
   const { showToast } = useToast();
   const [targetProfile, setTargetProfile] = useState<UserProfile | null>(null);
   const [userPosts, setUserPosts] = useState<Post[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [newBio, setNewBio] = useState('');
+  const [editName, setEditName] = useState('');
+  const [editBio, setEditBio] = useState('');
+  const [editCity, setEditCity] = useState('');
+  const [editBirthdate, setEditBirthdate] = useState('');
+  const [editHideEmail, setEditHideEmail] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
   const [stats, setStats] = useState({ followers: 0, following: 0 });
   const [isFollowing, setIsFollowing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -2082,6 +2374,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   }, [error]);
 
   const effectiveUid = userId || currentProfile?.uid;
+  const isOwnProfile = currentProfile?.uid === effectiveUid;
 
   useEffect(() => {
     if (!effectiveUid) return;
@@ -2152,16 +2445,34 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     };
   }, [effectiveUid, currentProfile]);
 
+  useEffect(() => {
+    if (!isOwnProfile || !targetProfile) return;
+    setEditName(targetProfile.displayName || '');
+    setEditBio(targetProfile.bio || '');
+    setEditCity(targetProfile.city || '');
+    setEditBirthdate(targetProfile.birthdate || '');
+    setEditHideEmail(!!targetProfile.hideEmail);
+  }, [isOwnProfile, targetProfile?.uid]);
+
   const handleUpdateBio = async () => {
     if (!currentProfile) return;
     try {
       await updateDoc(doc(db, 'users', currentProfile.uid), { bio: newBio });
       setTargetProfile(prev => prev ? { ...prev, bio: newBio } : null);
+      setEditBio(newBio);
       setIsEditing(false);
     } catch (err) {
-      const errInfo = handleFirestoreError(err, OperationType.UPDATE, `users/${currentProfile.uid}`);
-      setError(`Failed to update bio: ${errInfo.error}`);
+      handleFirestoreError(err, OperationType.UPDATE, `users/${currentProfile.uid}`);
+      setError(t('bioUpdateFailed').replace('{error}', t('genericError')));
     }
+  };
+
+  const syncAuthorPosts = async (updates: Partial<Post>) => {
+    if (!currentProfile) return;
+    const q = query(collection(db, 'posts'), where('authorUid', '==', currentProfile.uid));
+    const snap = await getDocs(q);
+    if (snap.empty) return;
+    await Promise.all(snap.docs.map(d => updateDoc(d.ref, updates)));
   };
 
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2179,10 +2490,11 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       const userDocRef = doc(db, 'users', currentProfile.uid);
       await updateDoc(userDocRef, { photoURL: dataUrl });
       setTargetProfile(prev => prev ? { ...prev, photoURL: dataUrl } : null);
+      await syncAuthorPosts({ authorPhoto: dataUrl });
       setAvatarProgress(100);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(`Avatar upload failed: ${msg}`);
+      const msg = getImageErrorMessage(err, t);
+      setError(t('avatarUploadFailed').replace('{error}', msg));
     } finally {
       setUploadingAvatar(false);
       setAvatarProgress(0);
@@ -2209,11 +2521,40 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       setTargetProfile(prev => prev ? { ...prev, headerURL: dataUrl } : null);
       setHeaderProgress(100);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(`Header upload failed: ${msg}`);
+      const msg = getImageErrorMessage(err, t);
+      setError(t('headerUploadFailed').replace('{error}', msg));
     } finally {
       setUploadingHeader(false);
       setHeaderProgress(0);
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    if (!currentProfile) return;
+    if (!editName.trim()) {
+      setError(t('namePlaceholder'));
+      return;
+    }
+    setSavingProfile(true);
+    try {
+      const updates = {
+        displayName: editName.trim(),
+        bio: editBio.trim(),
+        city: editCity.trim(),
+        birthdate: editBirthdate || '',
+        hideEmail: editHideEmail
+      };
+      await updateDoc(doc(db, 'users', currentProfile.uid), updates);
+      setTargetProfile(prev => prev ? { ...prev, ...updates } : null);
+      setNewBio(editBio.trim());
+      if (currentProfile.displayName !== editName.trim()) {
+        await syncAuthorPosts({ authorName: editName.trim() });
+      }
+      showToast(t('profileSaved'), 'success');
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    } finally {
+      setSavingProfile(false);
     }
   };
 
@@ -2279,8 +2620,14 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   );
 
   if (!targetProfile) return <div className="text-center py-40">{t('userNotFound')}</div>;
-
-  const isOwnProfile = currentProfile?.uid === effectiveUid;
+  const age = getAgeFromBirthdate(targetProfile.birthdate);
+  const editAge = getAgeFromBirthdate(editBirthdate);
+  const profileMetaParts = [
+    age !== null ? t('ageYears').replace('{age}', String(age)) : '',
+    targetProfile.city?.trim() || ''
+  ].filter(Boolean);
+  const usernameDisplay = formatUsername(targetProfile.username);
+  const emailDisplay = getEmailDisplay(targetProfile, currentProfile?.uid, t);
 
   return (
     <div className="max-w-xl mx-auto py-20 px-4">
@@ -2294,7 +2641,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
             onClick={() => setError(null)}
             className="text-xs underline hover:no-underline opacity-70 whitespace-nowrap"
           >
-            Dismiss
+            {t('dismiss')}
           </button>
         </div>
       )}
@@ -2361,9 +2708,25 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         </div>
       </div>
 
+      {isOwnProfile && (
+        <div className="mb-8">
+          <PhotoLimitsNotice />
+        </div>
+      )}
+
       <div className="text-center mb-12">
         <h1 className="text-2xl font-bold tracking-tight">{targetProfile.displayName}</h1>
-        <p className="text-gray-500 text-sm mt-1">{targetProfile.email}</p>
+        {usernameDisplay && (
+          <p className="text-gray-500 text-sm mt-1">{usernameDisplay}</p>
+        )}
+        {emailDisplay && (
+          <p className="text-[11px] text-gray-400 mt-1">{emailDisplay}</p>
+        )}
+        {profileMetaParts.length > 0 && (
+          <p className="text-[11px] text-gray-400 mt-2">
+            {profileMetaParts.join(' · ')}
+          </p>
+        )}
         
         {isOwnProfile ? (
           isEditing ? (
@@ -2375,8 +2738,8 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 placeholder={t('bioPlaceholder')}
               />
               <div className="flex gap-2 mt-2">
-                <button onClick={handleUpdateBio} className="flex-1 bg-black dark:bg-white text-white dark:text-black py-1 rounded-lg text-sm font-bold">Save</button>
-                <button onClick={() => setIsEditing(false)} className="flex-1 bg-gray-100 dark:bg-zinc-800 py-1 rounded-lg text-sm font-bold">Cancel</button>
+                <button onClick={handleUpdateBio} className="flex-1 bg-black dark:bg-white text-white dark:text-black py-1 rounded-lg text-sm font-bold">{t('save')}</button>
+                <button onClick={() => setIsEditing(false)} className="flex-1 bg-gray-100 dark:bg-zinc-800 py-1 rounded-lg text-sm font-bold">{t('cancel')}</button>
               </div>
             </div>
           ) : (
@@ -2454,7 +2817,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 activeTab === 'settings' ? "opacity-100" : "opacity-50"
               )}
             >
-              <div className="font-bold text-lg">SET</div>
+              <div className="font-bold text-lg">{t('settingsShort')}</div>
               <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('settings')}</div>
             </button>
           )}
@@ -2504,7 +2867,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   <img src={u.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="text-left">
                     <div className="font-bold text-sm">{u.displayName}</div>
-                    <div className="text-[10px] text-gray-400 uppercase tracking-widest">{u.email}</div>
+                    <div className="text-[10px] text-gray-400 uppercase tracking-widest">{getUserSecondaryLabel(u, currentProfile?.uid, t)}</div>
                   </div>
                 </button>
               </div>
@@ -2532,7 +2895,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   <img src={u.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="text-left">
                     <div className="font-bold text-sm">{u.displayName}</div>
-                    <div className="text-[10px] text-gray-400 uppercase tracking-widest">{u.email}</div>
+                    <div className="text-[10px] text-gray-400 uppercase tracking-widest">{getUserSecondaryLabel(u, currentProfile?.uid, t)}</div>
                   </div>
                 </button>
               </div>
@@ -2552,6 +2915,77 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
             className="space-y-4"
           >
             <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('profileInfo')}</div>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-gray-400 uppercase tracking-widest">{t('displayNameLabel')}</label>
+                  <input
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 uppercase tracking-widest">{t('bioLabel')}</label>
+                  <textarea
+                    value={editBio}
+                    onChange={(e) => setEditBio(e.target.value)}
+                    rows={3}
+                    className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-400 uppercase tracking-widest">{t('birthdateLabel')}</label>
+                    <input
+                      type="date"
+                      value={editBirthdate}
+                      onChange={(e) => setEditBirthdate(e.target.value)}
+                      className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 uppercase tracking-widest">{t('cityLabel')}</label>
+                    <input
+                      value={editCity}
+                      onChange={(e) => setEditCity(e.target.value)}
+                      className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                    />
+                  </div>
+                </div>
+                {editAge !== null && (
+                  <div className="text-[11px] text-gray-400">
+                    {t('ageYears').replace('{age}', String(editAge))}
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+                  <div>
+                    <div className="text-sm font-bold">{t('hideEmailLabel')}</div>
+                    <div className="text-[11px] text-gray-400">{t('hideEmailHint')}</div>
+                  </div>
+                  <button
+                    onClick={() => setEditHideEmail(!editHideEmail)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                      editHideEmail
+                        ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                        : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                    )}
+                  >
+                    {editHideEmail ? t('on') : t('off')}
+                  </button>
+                </div>
+                <button
+                  onClick={handleSaveProfile}
+                  disabled={savingProfile}
+                  className="w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-50"
+                >
+                  {savingProfile ? t('uploading') : t('save')}
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
               <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('appSettings')}</div>
               <div className="flex items-center justify-between">
                 <div>
@@ -2564,6 +2998,46 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 >
                   {darkMode ? t('dark') : t('light')}
                 </button>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('notifications')}</div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-bold text-sm">{t('notificationsToggle')}</div>
+                    <div className="text-xs text-gray-400">{t('notificationsHint')}</div>
+                  </div>
+                  <button
+                    onClick={() => setNotificationsEnabled(!notificationsEnabled)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                      notificationsEnabled
+                        ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                        : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                    )}
+                  >
+                    {notificationsEnabled ? t('on') : t('off')}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-bold text-sm">{t('toastsToggle')}</div>
+                    <div className="text-xs text-gray-400">{t('toastsHint')}</div>
+                  </div>
+                  <button
+                    onClick={() => setToastsEnabled(!toastsEnabled)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                      toastsEnabled
+                        ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                        : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                    )}
+                  >
+                    {toastsEnabled ? t('on') : t('off')}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2658,16 +3132,24 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
     return unsubscribe;
   }, [profile]);
 
-  const filteredUsers = users.filter(u => 
-    u.displayName.toLowerCase().includes(search.toLowerCase()) || 
-    u.email.toLowerCase().includes(search.toLowerCase())
-  );
+  const normalizedSearch = search.toLowerCase().replace(/^@/, '');
+  const filteredUsers = users.filter(u => {
+    const haystack = [
+      u.displayName,
+      u.username,
+      u.email
+    ].filter(Boolean).map(v => v!.toLowerCase());
+    return haystack.some(v => v.includes(normalizedSearch));
+  });
 
   const followingUsers = users.filter(u => followingUids.includes(u.uid));
 
   return (
-    <div className="max-w-xl mx-auto py-20 px-4">
-      <h2 className="text-3xl font-bold mb-8 tracking-tight">{t('messages')}</h2>
+    <div className="max-w-3xl mx-auto pt-20 pb-24 px-4">
+      <div className="mb-8 rounded-3xl border border-gray-100 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-sm">
+        <h2 className="text-3xl font-bold tracking-tight">{t('messages')}</h2>
+        <p className="text-sm text-gray-400 mt-2">{t('messagesSubtitle')}</p>
+      </div>
       
       <div className="relative mb-8">
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
@@ -2683,7 +3165,7 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
         <>
           {recentChats.length > 0 && (
             <div className="mb-10">
-              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Recent Chats</h3>
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">{t('recentChats')}</h3>
               <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar">
                 {recentChats.map(user => (
                   <button
@@ -2708,6 +3190,11 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
               </div>
             </div>
           )}
+          {recentChats.length === 0 && (
+            <div className="mb-10 text-center text-sm text-gray-400">
+              {t('noRecentChats')}
+            </div>
+          )}
 
           {followingUsers.length > 0 && (
             <div className="mb-10">
@@ -2726,17 +3213,17 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
                           <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white dark:border-black rounded-full" />
                         )}
                       </div>
-                      <div>
-                        <div className="font-bold text-sm flex items-center gap-2">
-                          {user.displayName}
-                          {unreadCounts[user.uid] > 0 && (
-                            <span className="bg-red-500 text-white text-[8px] px-1.5 py-0.5 rounded-full">
-                              {unreadCounts[user.uid]}
-                            </span>
-                          )}
+                        <div>
+                          <div className="font-bold text-sm flex items-center gap-2">
+                            {user.displayName}
+                            {unreadCounts[user.uid] > 0 && (
+                              <span className="bg-red-500 text-white text-[8px] px-1.5 py-0.5 rounded-full">
+                                {unreadCounts[user.uid]}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-gray-400">{getUserSecondaryLabel(user, profile?.uid, t)}</div>
                         </div>
-                        <div className="text-[10px] text-gray-400">{user.email}</div>
-                      </div>
                     </div>
                     <MessageSquare size={18} className="text-gray-300 group-hover:text-black dark:group-hover:text-white transition-colors" />
                   </div>
@@ -2759,7 +3246,7 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
                 <img src={user.photoURL} className="w-12 h-12 rounded-full object-cover" referrerPolicy="no-referrer" />
                 <div>
                   <div className="font-bold text-sm">{user.displayName}</div>
-                  <div className="text-[10px] text-gray-400">{user.email}</div>
+                  <div className="text-[10px] text-gray-400">{getUserSecondaryLabel(user, profile?.uid, t)}</div>
                 </div>
               </div>
               <button
@@ -2788,6 +3275,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [receiver, setReceiver] = useState<UserProfile | null>(null);
+  const receiverHandle = receiver ? formatUsername(receiver.username) : '';
 
   useEffect(() => {
     const unsubReceiver = onSnapshot(doc(db, 'users', receiverUid), (d) => {
@@ -2859,7 +3347,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
         });
         return;
       } catch (err) {
-        showToast(String(err), 'error');
+        showToast(getImageErrorMessage(err, t), 'error');
         return;
       }
     }
@@ -2893,8 +3381,8 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   };
 
   return (
-    <div className="max-w-2xl mx-auto h-screen flex flex-col bg-white dark:bg-black">
-      <div className="p-4 border-b dark:border-zinc-800 flex items-center justify-between bg-white/80 dark:bg-black/80 backdrop-blur-md sticky top-0 z-10">
+    <div className="w-full max-w-3xl mx-auto h-screen flex flex-col bg-white dark:bg-black">
+      <div className="p-4 border-b dark:border-zinc-800 flex items-center justify-between bg-white/90 dark:bg-black/90 backdrop-blur-md sticky top-0 z-10">
         <div className="flex items-center gap-4">
           <button onClick={onBack} className="p-2 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-full transition-colors">
             <ArrowLeft size={20} />
@@ -2904,6 +3392,9 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
               <img src={receiver.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
               <div>
                 <div className="font-bold text-sm">{receiver.displayName}</div>
+                {receiverHandle && (
+                  <div className="text-[10px] text-gray-400">{receiverHandle}</div>
+                )}
                 {receiver.isOnline ? (
                   <div className="text-[10px] text-green-500 font-bold uppercase tracking-widest">{t('online')}</div>
                 ) : (
@@ -2920,7 +3411,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50 dark:bg-zinc-900/20">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gradient-to-b from-gray-50/80 via-white to-white dark:from-zinc-900/40 dark:via-black dark:to-black">
         {messages.map((m, idx) => {
           const isMe = m.senderUid === profile?.uid;
           const showAvatar = idx === 0 || messages[idx-1].senderUid !== m.senderUid;
@@ -3054,9 +3545,6 @@ function Login() {
             {t('continueGoogle')}
           </button>
         </div>
-        <div className="text-center text-[11px] text-gray-400 mt-4">
-          {t('uploadNote')}
-        </div>
       </div>
     </div>
   );
@@ -3078,6 +3566,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   if (!user) return null;
 
   const totalSteps = 4;
+  const stepLabels = [t('stepWelcome'), t('stepUsername'), t('stepName'), t('stepMedia')];
 
   const validateUrl = (value: string) => {
     if (!value.trim()) return true;
@@ -3085,7 +3574,8 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   };
 
   const handleCheckUsername = async () => {
-    const value = username.trim().toLowerCase();
+    const normalized = normalizeUsername(username);
+    const value = normalized.toLowerCase();
     if (!/^[a-z0-9_]{3,20}$/.test(value)) {
       setError(t('usernameHint'));
       return false;
@@ -3093,15 +3583,19 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
     setChecking(true);
     try {
       const q = query(collection(db, 'users'), where('usernameLower', '==', value), limit(1));
-      const snap = await getDocs(q);
-      if (!snap.empty && snap.docs[0].id !== user.uid) {
+      const qLegacy = query(collection(db, 'users'), where('usernameLower', '==', `@${value}`), limit(1));
+      const [snap, snapLegacy] = await Promise.all([getDocs(q), getDocs(qLegacy)]);
+      const taken =
+        (!snap.empty && snap.docs[0].id !== user.uid) ||
+        (!snapLegacy.empty && snapLegacy.docs[0].id !== user.uid);
+      if (taken) {
         setError(t('usernameTaken'));
         return false;
       }
       setError(null);
       return true;
     } catch (err) {
-      setError(String(err));
+      setError(t('genericError'));
       return false;
     } finally {
       setChecking(false);
@@ -3134,19 +3628,23 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
 
   const handleFinish = async () => {
     try {
-      const usernameLower = username.trim().toLowerCase();
+      const normalized = normalizeUsername(username);
+      const usernameLower = normalized.toLowerCase();
       const photoURL = avatarUrl.trim() || user.photoURL || profile?.photoURL || '';
       const headerURL = bannerUrl.trim() || profile?.headerURL || '';
       const userDocRef = doc(db, 'users', user.uid);
       await setDoc(userDocRef, {
         uid: user.uid,
-        username: username.trim(),
+        username: normalized,
         usernameLower,
         displayName: displayName.trim(),
         email: user.email || '',
         photoURL,
         headerURL,
         bio: profile?.bio || '',
+        city: profile?.city || '',
+        birthdate: profile?.birthdate || '',
+        hideEmail: profile?.hideEmail ?? false,
         createdAt: profile?.createdAt || serverTimestamp(),
         isOnline: true,
         lastSeen: serverTimestamp()
@@ -3155,7 +3653,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
       setShowDone(true);
       setTimeout(() => onComplete(), 1600);
     } catch (err) {
-      setError(String(err));
+      setError(t('genericError'));
     }
   };
 
@@ -3169,7 +3667,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
       setAvatarUrl(dataUrl);
       setError(null);
     } catch (err) {
-      setError(String(err));
+      setError(getImageErrorMessage(err, t));
     }
   };
 
@@ -3183,12 +3681,84 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
       setBannerUrl(dataUrl);
       setError(null);
     } catch (err) {
-      setError(String(err));
+      setError(getImageErrorMessage(err, t));
     }
   };
 
+  const renderIllustration = () => {
+    if (step === 0) {
+      return (
+        <div className="relative overflow-hidden rounded-2xl border border-gray-100 dark:border-zinc-800 bg-gradient-to-br from-white via-gray-50 to-gray-100 dark:from-zinc-900 dark:via-zinc-900 dark:to-zinc-800 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-[0.2em] text-gray-400">{t('welcome')}</div>
+              <div className="text-lg font-semibold text-gray-900 dark:text-white">ZIMO</div>
+            </div>
+            <div className="w-10 h-10 rounded-2xl bg-black dark:bg-white flex items-center justify-center">
+              <div className="w-4 h-4 border-2 border-white dark:border-black rounded-full" />
+            </div>
+          </div>
+          <div className="mt-3 flex gap-2">
+            <div className="h-2 w-16 rounded-full bg-gray-200 dark:bg-zinc-700" />
+            <div className="h-2 w-10 rounded-full bg-gray-200 dark:bg-zinc-700" />
+            <div className="h-2 w-6 rounded-full bg-gray-200 dark:bg-zinc-700" />
+          </div>
+          <div className="absolute -right-8 -bottom-8 w-24 h-24 rounded-full bg-black/5 dark:bg-white/10 blur-2xl" />
+        </div>
+      );
+    }
+    if (step === 1) {
+      return (
+        <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 flex items-center justify-between">
+          <div>
+            <div className="text-xs text-gray-400 uppercase tracking-widest">{t('stepUsername')}</div>
+            <div className="text-lg font-semibold text-gray-900 dark:text-white">{formatUsername(normalizeUsername(username) || 'zimo')}</div>
+          </div>
+          <div className="px-3 py-1.5 rounded-full text-xs font-bold bg-black text-white dark:bg-white dark:text-black">
+            {t('checking')}
+          </div>
+        </div>
+      );
+    }
+    if (step === 2) {
+      return (
+        <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 bg-gradient-to-r from-gray-50 to-white dark:from-zinc-900 dark:to-zinc-900 p-4 flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-black/5 dark:bg-white/10 flex items-center justify-center">
+            <div className="w-6 h-6 rounded-full bg-black/20 dark:bg-white/20" />
+          </div>
+          <div>
+            <div className="text-xs text-gray-400 uppercase tracking-widest">{t('yourName')}</div>
+            <div className="text-lg font-semibold text-gray-900 dark:text-white">{displayName || t('namePlaceholder')}</div>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+        <div className="h-10 rounded-xl bg-gray-100 dark:bg-zinc-800 mb-3" />
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-zinc-800" />
+          <div className="flex-1 space-y-2">
+            <div className="h-2 w-24 rounded-full bg-gray-100 dark:bg-zinc-800" />
+            <div className="h-2 w-16 rounded-full bg-gray-100 dark:bg-zinc-800" />
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-gray-50 via-white to-gray-100 dark:from-black dark:via-zinc-950 dark:to-black p-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-gray-50 via-white to-gray-100 dark:from-black dark:via-zinc-950 dark:to-black p-4 relative overflow-hidden">
+      <motion.div
+        className="absolute -top-24 -left-24 w-72 h-72 rounded-full bg-gradient-to-br from-blue-200/40 via-transparent to-transparent dark:from-blue-500/10 blur-3xl"
+        animate={{ y: [0, 12, 0], x: [0, 8, 0] }}
+        transition={{ duration: 8, repeat: Infinity }}
+      />
+      <motion.div
+        className="absolute -bottom-24 -right-24 w-72 h-72 rounded-full bg-gradient-to-br from-pink-200/40 via-transparent to-transparent dark:from-pink-500/10 blur-3xl"
+        animate={{ y: [0, -10, 0], x: [0, -6, 0] }}
+        transition={{ duration: 9, repeat: Infinity }}
+      />
       <div className="max-w-xl w-full">
         <div className="bg-white/90 dark:bg-zinc-900/80 border border-gray-100 dark:border-zinc-800 rounded-3xl p-8 shadow-2xl backdrop-blur">
           <div className="flex items-center justify-between mb-6">
@@ -3200,6 +3770,29 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
             </div>
           </div>
 
+          <div className="flex items-center gap-2 mb-6">
+            {stepLabels.map((label, idx) => (
+              <div key={label} className="flex items-center gap-2 flex-1">
+                <div
+                  className={cn(
+                    "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-colors",
+                    idx <= step
+                      ? "bg-black text-white dark:bg-white dark:text-black"
+                      : "bg-gray-200 text-gray-400 dark:bg-zinc-800 dark:text-zinc-500"
+                  )}
+                >
+                  {idx + 1}
+                </div>
+                <span className={cn("text-[10px] uppercase tracking-widest", idx === step ? "text-gray-800 dark:text-gray-200" : "text-gray-400 dark:text-zinc-500")}>
+                  {label}
+                </span>
+                {idx < stepLabels.length - 1 && (
+                  <div className="flex-1 h-px bg-gray-200 dark:bg-zinc-800" />
+                )}
+              </div>
+            ))}
+          </div>
+
           <div className="h-1.5 bg-gray-100 dark:bg-zinc-800 rounded-full overflow-hidden mb-6">
             <motion.div
               initial={{ width: 0 }}
@@ -3208,6 +3801,19 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               className="h-full bg-black dark:bg-white"
             />
           </div>
+
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={`illustration-${step}`}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.3 }}
+              className="mb-6"
+            >
+              {renderIllustration()}
+            </motion.div>
+          </AnimatePresence>
 
           {showDone ? (
             <motion.div
@@ -3227,7 +3833,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               <p className="text-gray-500 mb-6">{t('onboardingSubtitle')}</p>
               <div className="bg-gray-50 dark:bg-zinc-900/60 border border-gray-100 dark:border-zinc-800 rounded-2xl p-4 text-sm">
                 <div className="font-bold">{user.email}</div>
-                <div className="text-xs text-gray-400">{user.displayName || 'Google Account'}</div>
+                <div className="text-xs text-gray-400">{user.displayName || t('googleAccount')}</div>
               </div>
             </div>
           )}
@@ -3236,15 +3842,18 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
             <div>
               <h2 className="text-2xl font-bold mb-2">{t('chooseUsername')}</h2>
               <p className="text-gray-500 text-sm mb-4">{t('usernameHint')}</p>
-              <input
-                value={username}
-                onChange={(e) => {
-                  setUsername(e.target.value);
-                  setError(null);
-                }}
-                placeholder={t('usernamePlaceholder')}
-                className="w-full bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
-              />
+              <div className="flex items-center bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus-within:ring-1 focus-within:ring-black dark:focus-within:ring-white">
+                <span className="text-gray-400 pr-1">@</span>
+                <input
+                  value={normalizeUsername(username)}
+                  onChange={(e) => {
+                    setUsername(e.target.value);
+                    setError(null);
+                  }}
+                  placeholder={t('usernamePlaceholder')}
+                  className="flex-1 bg-transparent focus:outline-none"
+                />
+              </div>
               {checking && <div className="text-xs text-gray-400 mt-2">{t('checking')}</div>}
               {!checking && error === t('usernameTaken') && (
                 <div className="text-xs text-red-500 mt-2">{t('usernameTaken')}</div>
@@ -3273,7 +3882,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
           {step === 3 && (
             <div>
               <h2 className="text-2xl font-bold mb-2">{t('optionalMedia')}</h2>
-              <p className="text-xs text-gray-400 mb-4">{t('uploadNote')}</p>
+              <PhotoLimitsNotice className="mb-4" />
               <div className="space-y-3">
                 <input
                   value={avatarUrl}
@@ -3450,7 +4059,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
         <div className="mt-6 p-4 bg-white dark:bg-zinc-900 rounded-2xl border border-gray-50 dark:border-zinc-800">
           <div className="flex items-center gap-2 mb-3">
             <Heart size={14} className="text-red-500 fill-red-500" />
-            <span className="text-xs font-bold text-gray-500 uppercase tracking-widest">Liked by</span>
+            <span className="text-xs font-bold text-gray-500 uppercase tracking-widest">{t('likedBy')}</span>
           </div>
           <div className="flex -space-x-2 overflow-hidden">
             {likedByUsers.map(user => (
@@ -3473,7 +4082,9 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
       )}
 
       <div className="mt-8">
-        <h3 className="font-bold text-lg mb-4">Comments ({comments.length})</h3>
+        <h3 className="font-bold text-lg mb-4">
+          {t('commentsTitle').replace('{count}', String(comments.length))}
+        </h3>
         
         <form onSubmit={handleComment} className="flex gap-2 mb-8">
           <input
@@ -3500,7 +4111,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
                 <div className="flex justify-between items-center mb-1">
                   <span className="font-bold text-xs">{comment.authorName}</span>
                   <span className="text-[10px] text-gray-400">
-                    {comment.createdAt ? formatDistanceToNow(comment.createdAt.toDate(), { addSuffix: true }) : 'Just now'}
+                    {comment.createdAt ? formatDistanceToNow(comment.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
                   </span>
                 </div>
                 <p className="text-sm text-gray-700 dark:text-gray-300">{comment.text}</p>
@@ -3520,6 +4131,7 @@ function LikesModal({ postId, onClose, onOpenProfile }: { postId: string, onClos
   const [likes, setLikes] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const { t } = useSettings();
+  const { profile } = useAuth();
 
   useEffect(() => {
     const fetchLikes = async () => {
@@ -3568,7 +4180,7 @@ function LikesModal({ postId, onClose, onOpenProfile }: { postId: string, onClos
                 <img src={user.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                 <div>
                   <div className="font-bold text-sm">{user.displayName}</div>
-                  <div className="text-[10px] text-gray-400">{user.email}</div>
+                  <div className="text-[10px] text-gray-400">{getUserSecondaryLabel(user, profile?.uid, t)}</div>
                 </div>
               </button>
             ))
@@ -3685,7 +4297,7 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
                 <span className="font-bold">{n.fromName}</span> {getMessage(n)}
               </p>
               <p className="text-[10px] text-gray-400 mt-1">
-                {n.createdAt ? formatDistanceToNow(n.createdAt.toDate(), { addSuffix: true }) : 'Just now'}
+                {n.createdAt ? formatDistanceToNow(n.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
               </p>
             </div>
           </div>
@@ -3756,7 +4368,7 @@ function SocialApp() {
         onSearchUser={handleOpenProfile}
       />
       
-      <main className="pb-20 md:pt-16">
+      <main className="pb-24 pt-6 md:pt-16">
         <AnimatePresence mode="wait">
           {view === 'feed' && (
             <Feed 
@@ -3856,27 +4468,30 @@ function SocialApp() {
 }
 
 function ErrorFallback({ error, resetErrorBoundary }: { error: any, resetErrorBoundary: () => void }) {
-  let displayMessage = "Something went wrong.";
+  const { t } = useSettings();
+  let displayMessage = t('somethingWrong');
   try {
     const parsed = JSON.parse(error.message || "");
     if (parsed.error && parsed.error.includes("insufficient permissions")) {
-      displayMessage = `Security Error: You don't have permission to ${parsed.operationType} at ${parsed.path}. Please check your rules.`;
+      displayMessage = t('securityError')
+        .replace('{operation}', parsed.operationType)
+        .replace('{path}', parsed.path);
     } else {
-      displayMessage = parsed.error || error.message || displayMessage;
+      displayMessage = t('genericError');
     }
   } catch (e) {
-    displayMessage = error.message || displayMessage;
+    displayMessage = t('genericError');
   }
 
   return (
     <div className="h-screen flex flex-col items-center justify-center p-4 bg-red-50 dark:bg-red-900/10 text-center">
-      <h1 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">Oops!</h1>
+      <h1 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">{t('oops')}</h1>
       <p className="text-gray-700 dark:text-gray-300 mb-6 max-w-md">{displayMessage}</p>
       <button 
         onClick={() => window.location.reload()} 
         className="bg-red-600 text-white px-6 py-2 rounded-full font-bold hover:bg-red-700 transition-colors"
       >
-        Reload App
+        {t('reloadApp')}
       </button>
     </div>
   );
