@@ -3970,6 +3970,14 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                       >
                         <MessageCircle size={16} />
                       </button>
+                      {isMe && (
+                        <button
+                          onClick={() => { setDeleteMenuId(deleteMenuId === m.id ? null : m.id); }}
+                          className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-full transition-all active:scale-90"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
                       <button
                         onClick={() => togglePin(m)}
                         className={cn(
