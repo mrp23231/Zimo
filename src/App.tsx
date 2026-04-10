@@ -2250,8 +2250,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               <span className="text-xs text-gray-400">{content.length}/1000</span>
             </div>
 
-            <PhotoLimitsNotice />
-
             {!STORAGE_ENABLED && (
               <div className="flex gap-2">
                 <input
@@ -2709,9 +2707,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       </div>
 
       {isOwnProfile && (
-        <div className="mb-8">
-          <PhotoLimitsNotice />
-        </div>
+        <div className="mb-8" />
       )}
 
       <div className="text-center mb-12">
@@ -3882,7 +3878,6 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
           {step === 3 && (
             <div>
               <h2 className="text-2xl font-bold mb-2">{t('optionalMedia')}</h2>
-              <PhotoLimitsNotice className="mb-4" />
               <div className="space-y-3">
                 <input
                   value={avatarUrl}
