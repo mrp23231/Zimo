@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: minimalist-social-network
+    env: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
