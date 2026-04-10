@@ -131,6 +131,8 @@ function handleStorageError(error: unknown, path: string) {
 
 interface UserProfile {
   uid: string;
+  username?: string;
+  usernameLower?: string;
   displayName: string;
   email: string;
   photoURL: string;
@@ -198,6 +200,320 @@ interface Message {
   read?: boolean;
 }
 
+type Language = 'en' | 'ru';
+
+const translations = {
+  en: {
+    searchUsers: 'Search users...',
+    noUsersFound: 'No users found',
+    feed: 'Feed',
+    explore: 'Explore',
+    notifications: 'Notifications',
+    bookmarks: 'Bookmarks',
+    messages: 'Messages',
+    profile: 'Profile',
+    posts: 'Posts',
+    followers: 'Followers',
+    following: 'Following',
+    settings: 'Settings',
+    appearance: 'Appearance',
+    theme: 'Theme',
+    language: 'Language',
+    light: 'Light',
+    dark: 'Dark',
+    appSettings: 'App settings',
+    loginTitle: 'ZIMO',
+    loginSubtitle: 'A social space for clear thoughts and real connections.',
+    continueGoogle: 'Continue with Google',
+    welcome: 'Welcome to Zimo',
+    onboardingSubtitle: 'Let’s finish your profile in a few quick steps.',
+    next: 'Next',
+    back: 'Back',
+    step: 'Step',
+    chooseUsername: 'Choose a unique username',
+    usernameHint: 'Only letters, numbers, and underscore. 3–20 chars.',
+    usernamePlaceholder: 'e.g. zimo_user',
+    checking: 'Checking...',
+    usernameTaken: 'That username is taken',
+    usernameAvailable: 'Username is available',
+    yourName: 'Your name',
+    namePlaceholder: 'How should we call you?',
+    optionalMedia: 'Optional profile media',
+    avatarUrl: 'Avatar image URL (optional)',
+    bannerUrl: 'Banner image URL (optional)',
+    skip: 'Skip',
+    finish: 'Finish',
+    welcomeDone: 'All set!',
+    welcomeMessage: 'Welcome to Zimo.',
+    uploadNote: 'Uploads are stored locally in posts (limited size).',
+    urlInvalid: 'URL must start with http:// or https://',
+    imageTooLarge: 'Image is too large after compression',
+    uploadFailed: 'Upload failed',
+    add: 'Add',
+    post: 'Post',
+    uploading: 'Uploading...',
+    uploadingImages: 'Uploading images...',
+    postPlaceholder: "What's on your mind?",
+    dismiss: 'Dismiss',
+    clear: 'Clear',
+    bioPlaceholder: 'Tell us about yourself...',
+    global: 'Global',
+    followingTab: 'Following',
+    results: 'results',
+    trending: 'Trending',
+    noTrends: 'No trends yet',
+    proTip: 'Pro Tip',
+    proTipText: 'Use hashtags to make your posts discoverable by everyone in the community!',
+    bookmarksEmpty: 'No bookmarks yet. Save posts to see them here!',
+    back: 'Back',
+    editBio: 'Edit Bio',
+    noBio: 'No bio yet',
+    follow: 'Follow',
+    followingBtn: 'Following',
+    block: 'Block',
+    blocked: 'Blocked',
+    userNotFound: 'User not found',
+    noPosts: 'No posts yet',
+    noFollowers: 'No followers yet',
+    noFollowing: 'Not following anyone yet',
+    likedBy: 'Liked by',
+    noLikes: 'No likes yet',
+    notificationsTitle: 'Notifications',
+    markAllRead: 'Mark all as read',
+    clearAll: 'Clear all',
+    notificationsEmpty: 'No notifications yet',
+    clearNotificationsConfirm: 'Clear all notifications?',
+    notificationsCleared: 'Notifications cleared',
+    markAllReadSuccess: 'All marked as read',
+    commentPlaceholder: 'Write a comment...',
+    shareCopied: 'Link copied to clipboard!',
+    repostConfirm: 'Repost this post?',
+    reposted: 'Post reposted!',
+    quoteReposted: 'Quote reposted!',
+    repostedLabel: 'Reposted',
+    repostDialog: 'Repost',
+    reposting: 'Reposting...',
+    quoteRepost: 'Quote Repost',
+    repostAction: 'Repost',
+    addCommentOptional: 'Add a comment (optional)',
+    uploadAvatar: 'Upload avatar',
+    uploadBanner: 'Upload banner',
+    reportConfirm: 'Report this post for inappropriate content?',
+    reportPost: 'Report Post',
+    reportSuccess: 'Post reported. Thank you for keeping our community safe.',
+    deletePostConfirm: 'Delete this post?',
+    postDeleted: 'Post deleted',
+    deletePostFailed: 'Failed to delete post',
+    updatePostSuccess: 'Post updated',
+    updatePostFailed: 'Failed to update post',
+    commentDeleted: 'Comment deleted',
+    commentDeleteFailed: 'Failed to delete comment',
+    online: 'Online',
+    lastSeen: 'Last seen',
+    recently: 'recently',
+    typeMessage: 'Type a message...',
+    startConversation: 'Start a conversation with',
+    sent: 'Sent',
+    read: 'Read',
+    communityStats: 'Community Stats',
+    members: 'Members',
+    postsStat: 'Posts',
+    popularPosts: 'Popular Posts',
+    likeMessage: 'liked your post',
+    commentMessage: 'commented on your post',
+    followMessage: 'started following you',
+    repostMessage: 'reposted your post',
+    interactedMessage: 'interacted with you',
+    searchPeople: 'Search people...',
+    noComments: 'No comments yet. Be the first to comment!',
+    failedClearNotifications: 'Failed to clear notifications',
+    failedMarkRead: 'Failed to mark as read',
+    blockConfirm: 'Block {name}? This user’s posts will be hidden from your feed.',
+    unblockConfirm: 'Unblock {name}?',
+    blockedToast: 'Blocked {name}',
+    unblockedToast: 'Unblocked {name}',
+    blockFailed: 'Failed to block user',
+    unblockFailed: 'Failed to unblock user',
+    whoToFollow: 'Who to follow',
+    followingTitle: 'Following',
+  },
+  ru: {
+    searchUsers: 'Поиск пользователей...',
+    noUsersFound: 'Пользователи не найдены',
+    feed: 'Лента',
+    explore: 'Обзор',
+    notifications: 'Уведомления',
+    bookmarks: 'Закладки',
+    messages: 'Сообщения',
+    profile: 'Профиль',
+    posts: 'Посты',
+    followers: 'Подписчики',
+    following: 'Подписки',
+    settings: 'Настройки',
+    appearance: 'Оформление',
+    theme: 'Тема',
+    language: 'Язык',
+    light: 'Светлая',
+    dark: 'Тёмная',
+    appSettings: 'Настройки приложения',
+    loginTitle: 'ZIMO',
+    loginSubtitle: 'Соцсеть для ясных мыслей и настоящих связей.',
+    continueGoogle: 'Войти через Google',
+    welcome: 'Добро пожаловать в Zimo',
+    onboardingSubtitle: 'Давайте оформим профиль за пару шагов.',
+    next: 'Далее',
+    back: 'Назад',
+    step: 'Шаг',
+    chooseUsername: 'Придумайте уникальный юзернейм',
+    usernameHint: 'Только буквы, цифры и _. 3–20 символов.',
+    usernamePlaceholder: 'например: zimo_user',
+    checking: 'Проверяем...',
+    usernameTaken: 'Юзернейм занят',
+    usernameAvailable: 'Юзернейм свободен',
+    yourName: 'Как вас зовут',
+    namePlaceholder: 'Как к вам обращаться?',
+    optionalMedia: 'Фото и баннер (необязательно)',
+    avatarUrl: 'URL аватара (необязательно)',
+    bannerUrl: 'URL баннера (необязательно)',
+    skip: 'Пропустить',
+    finish: 'Готово',
+    welcomeDone: 'Готово!',
+    welcomeMessage: 'Добро пожаловать в Zimo.',
+    uploadNote: 'Загрузка хранится прямо в постах (ограниченный размер).',
+    urlInvalid: 'URL должен начинаться с http:// или https://',
+    imageTooLarge: 'Изображение слишком большое после сжатия',
+    uploadFailed: 'Не удалось загрузить',
+    add: 'Добавить',
+    post: 'Опубликовать',
+    uploading: 'Загрузка...',
+    uploadingImages: 'Загружаем изображения...',
+    postPlaceholder: 'О чём хотите рассказать?',
+    dismiss: 'Скрыть',
+    clear: 'Очистить',
+    bioPlaceholder: 'Расскажите о себе...',
+    global: 'Все',
+    followingTab: 'Подписки',
+    results: 'результаты',
+    trending: 'Тренды',
+    noTrends: 'Пока нет трендов',
+    proTip: 'Подсказка',
+    proTipText: 'Используйте хэштеги, чтобы ваши посты было проще найти!',
+    bookmarksEmpty: 'Пока нет закладок. Сохраняйте посты, чтобы видеть их здесь!',
+    back: 'Назад',
+    editBio: 'Редактировать',
+    noBio: 'Пока нет описания',
+    follow: 'Подписаться',
+    followingBtn: 'Подписки',
+    block: 'Заблокировать',
+    blocked: 'Заблокирован',
+    userNotFound: 'Пользователь не найден',
+    noPosts: 'Пока нет постов',
+    noFollowers: 'Пока нет подписчиков',
+    noFollowing: 'Пока нет подписок',
+    likedBy: 'Понравилось',
+    noLikes: 'Пока нет лайков',
+    notificationsTitle: 'Уведомления',
+    markAllRead: 'Прочитать все',
+    clearAll: 'Очистить всё',
+    notificationsEmpty: 'Пока нет уведомлений',
+    clearNotificationsConfirm: 'Очистить все уведомления?',
+    notificationsCleared: 'Уведомления очищены',
+    markAllReadSuccess: 'Все отмечены прочитанными',
+    commentPlaceholder: 'Написать комментарий...',
+    shareCopied: 'Ссылка скопирована!',
+    repostConfirm: 'Сделать репост?',
+    reposted: 'Репост опубликован!',
+    quoteReposted: 'Цитата опубликована!',
+    repostedLabel: 'Репост',
+    repostDialog: 'Репост',
+    reposting: 'Репостим...',
+    quoteRepost: 'Цитата',
+    repostAction: 'Репост',
+    addCommentOptional: 'Добавьте комментарий (необязательно)',
+    uploadAvatar: 'Загрузить аватар',
+    uploadBanner: 'Загрузить баннер',
+    reportConfirm: 'Пожаловаться на этот пост?',
+    reportPost: 'Пожаловаться',
+    reportSuccess: 'Пост отправлен на проверку. Спасибо!',
+    deletePostConfirm: 'Удалить этот пост?',
+    postDeleted: 'Пост удалён',
+    deletePostFailed: 'Не удалось удалить пост',
+    updatePostSuccess: 'Пост обновлён',
+    updatePostFailed: 'Не удалось обновить пост',
+    commentDeleted: 'Комментарий удалён',
+    commentDeleteFailed: 'Не удалось удалить комментарий',
+    online: 'В сети',
+    lastSeen: 'Был(а)',
+    recently: 'недавно',
+    typeMessage: 'Написать сообщение...',
+    startConversation: 'Начните диалог с',
+    sent: 'Отправлено',
+    read: 'Прочитано',
+    communityStats: 'Статистика сообщества',
+    members: 'Участники',
+    postsStat: 'Посты',
+    popularPosts: 'Популярные посты',
+    likeMessage: 'лайкнул ваш пост',
+    commentMessage: 'оставил комментарий',
+    followMessage: 'подписался на вас',
+    repostMessage: 'сделал репост вашего поста',
+    interactedMessage: 'взаимодействовал с вами',
+    searchPeople: 'Поиск людей...',
+    noComments: 'Пока нет комментариев. Будьте первым!',
+    failedClearNotifications: 'Не удалось очистить уведомления',
+    failedMarkRead: 'Не удалось отметить прочитанными',
+    blockConfirm: 'Заблокировать {name}? Его посты будут скрыты.',
+    unblockConfirm: 'Разблокировать {name}?',
+    blockedToast: 'Пользователь заблокирован: {name}',
+    unblockedToast: 'Пользователь разблокирован: {name}',
+    blockFailed: 'Не удалось заблокировать пользователя',
+    unblockFailed: 'Не удалось разблокировать пользователя',
+    whoToFollow: 'Кого читать',
+    followingTitle: 'Подписки',
+  },
+} as const;
+
+type TranslationKey = keyof typeof translations.en;
+
+const STORAGE_ENABLED = false;
+const MAX_IMAGE_BYTES = 700 * 1024;
+const MAX_IMAGE_DIM = 1280;
+
+const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: number }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('File read failed'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Image decode failed'));
+      img.onload = () => {
+        const scale = Math.min(1, MAX_IMAGE_DIM / Math.max(img.width, img.height));
+        const width = Math.round(img.width * scale);
+        const height = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('Canvas not supported'));
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        const bytes = Math.round((dataUrl.length * 3) / 4);
+        resolve({ dataUrl, bytes });
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
+const getDefaultLanguage = (): Language => {
+  if (typeof navigator !== 'undefined') {
+    const lang = navigator.language?.toLowerCase();
+    if (lang?.startsWith('ru')) return 'ru';
+  }
+  return 'en';
+};
+
 type View = 'feed' | 'profile' | 'messages' | 'chat' | 'notifications' | 'post_detail' | 'user_profile' | 'explore' | 'bookmarks';
 
 // --- Context ---
@@ -263,14 +579,60 @@ const AuthContext = createContext<{
   user: FirebaseUser | null;
   profile: UserProfile | null;
   loading: boolean;
+  needsOnboarding: boolean;
   signIn: () => Promise<void>;
   logout: () => Promise<void>;
 } | null>(null);
+
+const SettingsContext = createContext<{
+  darkMode: boolean;
+  setDarkMode: (v: boolean) => void;
+  language: Language;
+  setLanguage: (l: Language) => void;
+  t: (key: TranslationKey) => string;
+} | null>(null);
+
+const useSettings = () => {
+  const context = useContext(SettingsContext);
+  if (!context) throw new Error('useSettings must be used within SettingsContext');
+  return context;
+};
+
+function SettingsProvider({ children }: { children: React.ReactNode }) {
+  const [darkMode, setDarkMode] = useState(() => {
+    const stored = localStorage.getItem('app_theme');
+    return stored ? stored === 'dark' : false;
+  });
+  const [language, setLanguage] = useState<Language>(() => {
+    const stored = localStorage.getItem('app_language');
+    if (stored === 'en' || stored === 'ru') return stored;
+    return getDefaultLanguage();
+  });
+
+  useEffect(() => {
+    if (darkMode) document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
+    localStorage.setItem('app_theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
+  useEffect(() => {
+    localStorage.setItem('app_language', language);
+  }, [language]);
+
+  const t = (key: TranslationKey) => translations[language][key] || translations.en[key] || key;
+
+  return (
+    <SettingsContext.Provider value={{ darkMode, setDarkMode, language, setLanguage, t }}>
+      {children}
+    </SettingsContext.Provider>
+  );
+}
 
 function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
 
   useEffect(() => {
     const testConnection = async () => {
@@ -290,6 +652,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(u);
       if (!u) {
         setProfile(null);
+        setNeedsOnboarding(false);
         setLoading(false);
       }
     });
@@ -320,31 +683,19 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       userDocRef,
       async (docSnap) => {
         if (docSnap.exists()) {
-          setProfile(docSnap.data() as UserProfile);
+          const data = docSnap.data() as UserProfile;
+          setProfile(data);
+          setNeedsOnboarding(!data.username);
         } else {
-          const newProfile: UserProfile = {
-            uid: user.uid,
-            displayName: user.displayName || 'Anonymous',
-            email: user.email || '',
-            photoURL: user.photoURL || '',
-            createdAt: Timestamp.now(),
-            isOnline: true,
-            lastSeen: Timestamp.now()
-          };
-          await setDoc(userDocRef, newProfile);
-          setProfile(newProfile);
+          setProfile(null);
+          setNeedsOnboarding(true);
         }
         setLoading(false);
       },
       (err) => {
         console.error("Firestore profile listener failed:", err);
-        setProfile({
-          uid: user.uid,
-          displayName: user.displayName || 'Anonymous',
-          email: user.email || '',
-          photoURL: user.photoURL || '',
-          createdAt: Timestamp.now()
-        });
+        setProfile(null);
+        setNeedsOnboarding(true);
         setLoading(false);
       }
     );
@@ -369,7 +720,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = () => signOut(auth);
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signIn, logout }}>
+    <AuthContext.Provider value={{ user, profile, loading, needsOnboarding, signIn, logout }}>
       {children}
     </AuthContext.Provider>
   );
@@ -418,6 +769,7 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   key?: string
 }) {
   const { profile } = useAuth();
+  const { t } = useSettings();
   const [trendingPosts, setTrendingPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -436,11 +788,11 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 
   return (
     <div className="max-w-4xl mx-auto py-20 px-4">
-      <h2 className="text-3xl font-bold mb-8 tracking-tight">Explore</h2>
+      <h2 className="text-3xl font-bold mb-8 tracking-tight">{t('explore')}</h2>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="space-y-6">
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Popular Posts</h3>
+          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest">{t('popularPosts')}</h3>
           {loading ? (
             <div className="flex justify-center py-10">
               <div className="w-6 h-6 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
@@ -462,15 +814,15 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
         <aside className="space-y-6">
           <WhoToFollow onOpenProfile={onOpenProfile} />
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-sm">
-            <h3 className="font-bold text-lg mb-4 tracking-tight">Community Stats</h3>
+            <h3 className="font-bold text-lg mb-4 tracking-tight">{t('communityStats')}</h3>
             <div className="grid grid-cols-2 gap-4">
               <div className="p-4 bg-gray-50 dark:bg-zinc-800/50 rounded-2xl">
                 <div className="text-2xl font-bold">1.2k</div>
-                <div className="text-[10px] text-gray-400 uppercase tracking-widest">Members</div>
+                <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('members')}</div>
               </div>
               <div className="p-4 bg-gray-50 dark:bg-zinc-800/50 rounded-2xl">
                 <div className="text-2xl font-bold">8.5k</div>
-                <div className="text-[10px] text-gray-400 uppercase tracking-widest">Posts</div>
+                <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('postsStat')}</div>
               </div>
             </div>
           </div>
@@ -488,6 +840,7 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   key?: string
 }) {
   const { profile } = useAuth();
+  const { t } = useSettings();
   const [bookmarkedPosts, setBookmarkedPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -508,7 +861,7 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 
   return (
     <div className="max-w-xl mx-auto py-20 px-4">
-      <h2 className="text-3xl font-bold mb-8 tracking-tight">Bookmarks</h2>
+      <h2 className="text-3xl font-bold mb-8 tracking-tight">{t('bookmarks')}</h2>
       {loading ? (
         <div className="flex justify-center py-10">
           <div className="w-6 h-6 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
@@ -529,7 +882,7 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
       ) : (
         <div className="text-center py-20 bg-white dark:bg-zinc-900 rounded-3xl border border-dashed border-gray-200 dark:border-zinc-800">
           <Bookmark size={48} className="mx-auto text-gray-200 dark:text-zinc-800 mb-4" />
-          <p className="text-gray-400">No bookmarks yet. Save posts to see them here!</p>
+          <p className="text-gray-400">{t('bookmarksEmpty')}</p>
         </div>
       )}
     </div>
@@ -538,6 +891,7 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 
 function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }) {
   const { profile } = useAuth();
+  const { t } = useSettings();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [followingUids, setFollowingUids] = useState<string[]>([]);
 
@@ -585,7 +939,7 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
 
   return (
     <div className="bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-sm">
-      <h3 className="font-bold text-lg mb-4 tracking-tight">Who to follow</h3>
+      <h3 className="font-bold text-lg mb-4 tracking-tight">{t('whoToFollow')}</h3>
       <div className="space-y-4">
         {suggestions.map(user => (
           <div key={user.uid} className="flex items-center justify-between gap-2">
@@ -603,7 +957,7 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
               onClick={() => handleFollow(user.uid)}
               className="bg-black dark:bg-white text-white dark:text-black px-4 py-1.5 rounded-full text-[10px] font-bold hover:opacity-80 transition-opacity"
             >
-              Follow
+              {t('follow')}
             </button>
           </div>
         ))}
@@ -619,6 +973,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
   setDarkMode: (d: boolean) => void,
   onSearchUser: (uid: string) => void
 }) {
+  const { t } = useSettings();
   const { logout, profile } = useAuth();
   const [unreadCount, setUnreadCount] = useState(0);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
@@ -666,24 +1021,24 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
   }, [profile]);
 
   const navItems = [
-    { id: 'feed', icon: Home, label: 'Feed' },
-    { id: 'explore', icon: Compass, label: 'Explore' },
-    { id: 'notifications', icon: Bell, label: 'Notifications', badge: unreadCount },
-    { id: 'bookmarks', icon: Bookmark, label: 'Bookmarks' },
-    { id: 'messages', icon: MessageSquare, label: 'Messages', badge: unreadMessagesCount },
-    { id: 'profile', icon: profile?.photoURL ? () => <img src={profile.photoURL} className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" /> : User, label: 'Profile' },
+    { id: 'feed', icon: Home, label: t('feed') },
+    { id: 'explore', icon: Compass, label: t('explore') },
+    { id: 'notifications', icon: Bell, label: t('notifications'), badge: unreadCount },
+    { id: 'bookmarks', icon: Bookmark, label: t('bookmarks') },
+    { id: 'messages', icon: MessageSquare, label: t('messages'), badge: unreadMessagesCount },
+    { id: 'profile', icon: profile?.photoURL ? () => <img src={profile.photoURL} className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" /> : User, label: t('profile') },
   ];
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 md:top-0 md:bottom-auto bg-white/80 dark:bg-black/80 backdrop-blur-md border-t md:border-t-0 md:border-b border-gray-200 dark:border-gray-800 z-50">
       <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-        <div className="hidden md:block font-bold text-xl tracking-tighter cursor-pointer" onClick={() => setView('feed')}>MINIMAL</div>
+        <div className="hidden md:block font-bold text-xl tracking-tighter cursor-pointer" onClick={() => setView('feed')}>ZIMO</div>
         
         <div className="flex-1 max-w-xs relative hidden sm:block">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
           <input
             type="text"
-            placeholder="Search users..."
+            placeholder={t('searchUsers')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onFocus={() => setIsSearching(true)}
@@ -714,7 +1069,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
                     </div>
                   </button>
                 )) : (
-                  <div className="p-4 text-center text-xs text-gray-400">No users found</div>
+                  <div className="p-4 text-center text-xs text-gray-400">{t('noUsersFound')}</div>
                 )}
               </motion.div>
             )}
@@ -767,6 +1122,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
 }) {
   const { profile } = useAuth();
   const { showToast } = useToast();
+  const { t } = useSettings();
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentText, setCommentText] = useState('');
@@ -860,7 +1216,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     e.stopPropagation();
     const url = `${window.location.origin}/post/${post.id}`;
     navigator.clipboard.writeText(url);
-    showToast("Link copied to clipboard!", "success");
+    showToast(t('shareCopied'), "success");
   };
 
   const handleComment = async (e: React.FormEvent) => {
@@ -899,12 +1255,12 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
 
   const handleDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm('Delete this post?')) {
+    if (window.confirm(t('deletePostConfirm'))) {
       try {
         await deleteDoc(doc(db, 'posts', post.id));
-        showToast("Post deleted", "info");
+        showToast(t('postDeleted'), "info");
       } catch (err) {
-        showToast("Failed to delete post", "error");
+        showToast(t('deletePostFailed'), "error");
       }
     }
   };
@@ -915,24 +1271,24 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     try {
       await updateDoc(doc(db, 'posts', post.id), { content: editContent.trim() });
       setIsEditing(false);
-      showToast("Post updated", "success");
+      showToast(t('updatePostSuccess'), "success");
     } catch (err) {
-      showToast("Failed to update post", "error");
+      showToast(t('updatePostFailed'), "error");
     }
   };
 
   const handleDeleteComment = async (commentId: string) => {
     try {
       await deleteDoc(doc(db, 'posts', post.id, 'comments', commentId));
-      showToast("Comment deleted", "info");
+      showToast(t('commentDeleted'), "info");
     } catch (err) {
-      showToast("Failed to delete comment", "error");
+      showToast(t('commentDeleteFailed'), "error");
     }
   };
 
   const handleReport = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm('Report this post for inappropriate content?')) {
+    if (window.confirm(t('reportConfirm'))) {
       try {
         await addDoc(collection(db, 'reports'), {
           postId: post.id,
@@ -941,7 +1297,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           createdAt: serverTimestamp(),
           status: 'pending'
         });
-        showToast("Post reported. Thank you for keeping our community safe.", "success");
+        showToast(t('reportSuccess'), "success");
       } catch (err) {
         showToast("Failed to report post", "error");
       }
@@ -989,7 +1345,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       
       setShowRepostDialog(false);
       setRepostText('');
-      showToast(repostText.trim() ? "Quote reposted!" : "Post reposted!", "success");
+      showToast(repostText.trim() ? t('quoteReposted') : t('reposted'), "success");
     } catch (err) {
       console.error("Error reposting:", err);
       showToast("Failed to repost", "error");
@@ -1054,7 +1410,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       {post.repostId && (
         <div className="mb-3 flex items-center gap-2 text-xs text-gray-400">
           <Repeat size={14} />
-          <span>Reposted</span>
+          <span>{t('repostedLabel')}</span>
         </div>
       )}
       <div className="flex justify-between items-start mb-4">
@@ -1086,7 +1442,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           <button 
             onClick={handleReport}
             className="p-2 text-gray-300 hover:text-orange-500 opacity-0 group-hover:opacity-100 transition-all rounded-full hover:bg-orange-50 dark:hover:bg-orange-900/20"
-            title="Report Post"
+            title={t('reportPost')}
           >
             <Flag size={16} />
           </button>
@@ -1254,7 +1610,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
                 <input
                   value={commentText}
                   onChange={(e) => setCommentText(e.target.value)}
-                  placeholder="Write a comment..."
+                  placeholder={t('commentPlaceholder')}
                   className="flex-1 bg-gray-50 dark:bg-zinc-800 rounded-full px-4 py-2 text-sm focus:outline-none"
                 />
                 <button type="submit" disabled={!commentText.trim()} className="p-2 text-black dark:text-white disabled:opacity-30">
@@ -1283,7 +1639,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
               onClick={(e) => e.stopPropagation()}
             >
               <div className="p-4 border-b dark:border-zinc-800 flex justify-between items-center bg-gray-50/50 dark:bg-zinc-800/50">
-                <h3 className="font-bold">Repost</h3>
+                <h3 className="font-bold">{t('repostDialog')}</h3>
                 <button onClick={handleCloseRepost} className="p-2 hover:bg-gray-200 dark:hover:bg-zinc-700 rounded-full transition-colors">
                   <X size={18} />
                 </button>
@@ -1292,7 +1648,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
                 <textarea
                   value={repostText}
                   onChange={(e) => setRepostText(e.target.value)}
-                  placeholder="Add a comment (optional)"
+                  placeholder={t('addCommentOptional')}
                   className="w-full bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none min-h-[110px]"
                 />
                 <div className="mt-4 flex gap-2">
@@ -1308,7 +1664,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
                     disabled={isReposting}
                     className="flex-1 bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-50"
                   >
-                    {isReposting ? "Reposting..." : (repostText.trim() ? "Quote Repost" : "Repost")}
+                    {isReposting ? t('reposting') : (repostText.trim() ? t('quoteRepost') : t('repostAction'))}
                   </button>
                 </div>
               </div>
@@ -1327,11 +1683,13 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   onClearHashtag?: () => void,
   onOpenImage: (url: string) => void,
   onShowLikes: (postId: string) => void,
-  key?: string
+  key?: string 
 }) {
+  const { t } = useSettings();
   const [posts, setPosts] = useState<Post[]>([]);
   const [content, setContent] = useState('');
   const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [imageUrlInput, setImageUrlInput] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -1424,58 +1782,36 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     setUploadProgress(0);
     const newUrls: string[] = [];
 
-    if (!auth.currentUser) {
-      setError("Session expired. Please log in again.");
-      setUploading(false);
-      return;
-    }
-
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        
-        if (file.size > 5 * 1024 * 1024) {
-          setError(`File ${file.name} is too large (max 5MB)`);
+        const { dataUrl, bytes } = await readAndCompressImage(file);
+        if (bytes > MAX_IMAGE_BYTES) {
+          setError(t('imageTooLarge'));
           continue;
         }
-
-        const storageRef = ref(storage, `posts/${profile.uid}/${Date.now()}_${file.name}`);
-        
-        const uploadTask = uploadBytesResumable(storageRef, file);
-        
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            uploadTask.cancel();
-            reject(new Error("Upload timed out (30s)"));
-          }, 30000);
-
-          uploadTask.on('state_changed', 
-            (snapshot) => {
-              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-              setUploadProgress(progress);
-            }, 
-            (error) => {
-              clearTimeout(timeout);
-              reject(error);
-            }, 
-            () => {
-              clearTimeout(timeout);
-              resolve();
-            }
-          );
-        });
-
-        const url = await getDownloadURL(uploadTask.snapshot.ref);
-        newUrls.push(url);
+        newUrls.push(dataUrl);
+        setUploadProgress(Math.round(((i + 1) / files.length) * 100));
       }
       setImageUrls(prev => [...prev, ...newUrls]);
     } catch (err) {
-      const msg = handleStorageError(err, `posts/${profile.uid}`);
-      setError(`Upload failed: ${msg}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`${t('uploadFailed')}: ${msg}`);
     } finally {
       setUploading(false);
       setUploadProgress(0);
     }
+  };
+
+  const addImageUrl = () => {
+    const value = imageUrlInput.trim();
+    if (!value) return;
+    if (!/^https?:\/\/.+/i.test(value)) {
+      setError(t('urlInvalid'));
+      return;
+    }
+    setImageUrls(prev => [...prev, value]);
+    setImageUrlInput('');
   };
 
   const removeImageUrl = (index: number) => {
@@ -1516,7 +1852,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           <div className="mb-6 flex items-center justify-between bg-blue-50 dark:bg-blue-900/20 p-4 rounded-2xl border border-blue-100 dark:border-blue-900/30">
             <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
               <span className="font-bold text-lg">#{searchHashtag.replace('#', '')}</span>
-              <span className="text-sm opacity-70">results</span>
+              <span className="text-sm opacity-70">{t('results')}</span>
             </div>
             <button 
               onClick={handleClearHashtag}
@@ -1537,7 +1873,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               onClick={() => setError(null)}
               className="text-xs underline hover:no-underline opacity-70"
             >
-              Dismiss
+              {t('dismiss')}
             </button>
           </div>
         )}
@@ -1545,7 +1881,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         {uploading && (
           <div className="mb-6 bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800 shadow-sm">
             <div className="flex justify-between text-xs font-medium mb-2">
-              <span className="text-gray-500">Uploading images...</span>
+              <span className="text-gray-500">{t('uploadingImages')}</span>
               <span>{Math.round(uploadProgress)}%</span>
             </div>
             <div className="h-1.5 bg-gray-100 dark:bg-zinc-800 rounded-full overflow-hidden">
@@ -1566,7 +1902,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               feedTab === 'global' ? "border-b-2 border-black dark:border-white text-black dark:text-white" : "text-gray-400"
             )}
           >
-            Global
+            {t('global')}
           </button>
           <button 
             onClick={() => setFeedTab('following')}
@@ -1575,7 +1911,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               feedTab === 'following' ? "border-b-2 border-black dark:border-white text-black dark:text-white" : "text-gray-400"
             )}
           >
-            Following
+            {t('followingTab')}
           </button>
         </div>
 
@@ -1583,7 +1919,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder="What's on your mind?"
+            placeholder={t('postPlaceholder')}
             className="w-full bg-transparent resize-none focus:outline-none text-lg min-h-[100px]"
             maxLength={1000}
           />
@@ -1605,7 +1941,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             </div>
           )}
 
-          <div className="flex justify-between items-center mt-4 border-t border-gray-50 dark:border-zinc-800 pt-4">
+          <div className="flex flex-col gap-3 mt-4 border-t border-gray-50 dark:border-zinc-800 pt-4">
             <div className="flex items-center gap-2">
               <label className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors flex items-center gap-1 cursor-pointer">
                 <ImageIcon size={20} />
@@ -1625,19 +1961,40 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                   onClick={clearImages}
                   className="text-[10px] font-bold uppercase tracking-widest text-red-500 hover:underline"
                 >
-                  Clear
+                {t('clear')}
                 </button>
               )}
               {uploading && <div className="w-4 h-4 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />}
               <span className="text-xs text-gray-400">{content.length}/1000</span>
             </div>
+
+            {!STORAGE_ENABLED && (
+              <div className="flex gap-2">
+                <input
+                  value={imageUrlInput}
+                  onChange={(e) => setImageUrlInput(e.target.value)}
+                  placeholder="https://example.com/image.jpg"
+                  className="flex-1 bg-gray-50 dark:bg-zinc-800 rounded-full px-4 py-2 text-xs focus:outline-none border dark:border-zinc-700"
+                />
+                <button
+                  type="button"
+                  onClick={addImageUrl}
+                  className="px-4 py-2 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                >
+                  {t('add')}
+                </button>
+              </div>
+            )}
+
+            <div className="flex justify-end">
             <button 
               type="submit"
               disabled={!content.trim() || uploading}
               className="bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-full font-medium disabled:opacity-50 transition-opacity"
             >
-              {uploading ? 'Uploading...' : 'Post'}
+              {uploading ? t('uploading') : t('post')}
             </button>
+            </div>
           </div>
         </form>
 
@@ -1660,7 +2017,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 
       <aside className="hidden lg:block w-64 space-y-6">
         <div className="bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-sm">
-          <h3 className="font-bold text-lg mb-4 tracking-tight">Trending</h3>
+          <h3 className="font-bold text-lg mb-4 tracking-tight">{t('trending')}</h3>
           <div className="space-y-4">
             {trending.length > 0 ? trending.map(([tag, count]) => (
               <div 
@@ -1672,15 +2029,15 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                 <div className="text-[10px] text-gray-400 uppercase tracking-widest">{count} posts</div>
               </div>
             )) : (
-              <div className="text-sm text-gray-400">No trends yet</div>
+              <div className="text-sm text-gray-400">{t('noTrends')}</div>
             )}
           </div>
         </div>
 
         <div className="bg-blue-50 dark:bg-blue-900/10 p-6 rounded-3xl border border-blue-100 dark:border-blue-900/20">
-          <h3 className="font-bold text-sm mb-2 text-blue-600 dark:text-blue-400">Pro Tip</h3>
+          <h3 className="font-bold text-sm mb-2 text-blue-600 dark:text-blue-400">{t('proTip')}</h3>
           <p className="text-xs text-blue-800 dark:text-blue-300 leading-relaxed">
-            Use hashtags to make your posts discoverable by everyone in the community!
+            {t('proTipText')}
           </p>
         </div>
 
@@ -1700,6 +2057,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   onShowLikes: (postId: string) => void,
   key?: string
 }) {
+  const { darkMode, setDarkMode, language, setLanguage, t } = useSettings();
   const { profile: currentProfile } = useAuth();
   const { showToast } = useToast();
   const [targetProfile, setTargetProfile] = useState<UserProfile | null>(null);
@@ -1712,7 +2070,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarProgress, setAvatarProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'posts' | 'followers' | 'following'>('posts');
+  const [activeTab, setActiveTab] = useState<'posts' | 'followers' | 'following' | 'settings'>('posts');
   const [followerProfiles, setFollowerProfiles] = useState<UserProfile[]>([]);
   const [followingProfiles, setFollowingProfiles] = useState<UserProfile[]>([]);
 
@@ -1809,55 +2167,21 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !currentProfile) return;
-
     setUploadingAvatar(true);
     setAvatarProgress(0);
-    
-    if (!auth.currentUser) {
-      setError("Session expired. Please log in again.");
-      setUploadingAvatar(false);
-      return;
-    }
 
     try {
-      if (file.size > 2 * 1024 * 1024) {
-        setError("Avatar image must be less than 2MB");
-        setUploadingAvatar(false);
+      const { dataUrl, bytes } = await readAndCompressImage(file);
+      if (bytes > MAX_IMAGE_BYTES) {
+        setError(t('imageTooLarge'));
         return;
       }
-
-      const storageRef = ref(storage, `avatars/${currentProfile.uid}`);
-      const uploadTask = uploadBytesResumable(storageRef, file);
-
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          uploadTask.cancel();
-          reject(new Error("Upload timed out (30s)"));
-        }, 30000);
-
-        uploadTask.on('state_changed', 
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setAvatarProgress(progress);
-          }, 
-          (error) => {
-            clearTimeout(timeout);
-            reject(error);
-          }, 
-          () => {
-            clearTimeout(timeout);
-            resolve();
-          }
-        );
-      });
-
-      const url = await getDownloadURL(uploadTask.snapshot.ref);
-      
       const userDocRef = doc(db, 'users', currentProfile.uid);
-      await updateDoc(userDocRef, { photoURL: url });
-      setTargetProfile(prev => prev ? { ...prev, photoURL: url } : null);
+      await updateDoc(userDocRef, { photoURL: dataUrl });
+      setTargetProfile(prev => prev ? { ...prev, photoURL: dataUrl } : null);
+      setAvatarProgress(100);
     } catch (err) {
-      const msg = handleStorageError(err, `avatars/${currentProfile.uid}`);
+      const msg = err instanceof Error ? err.message : String(err);
       setError(`Avatar upload failed: ${msg}`);
     } finally {
       setUploadingAvatar(false);
@@ -1871,55 +2195,21 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const handleHeaderChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !currentProfile) return;
-
     setUploadingHeader(true);
     setHeaderProgress(0);
-    
-    if (!auth.currentUser) {
-      setError("Session expired. Please log in again.");
-      setUploadingHeader(false);
-      return;
-    }
 
     try {
-      if (file.size > 5 * 1024 * 1024) {
-        setError("Header image must be less than 5MB");
-        setUploadingHeader(false);
+      const { dataUrl, bytes } = await readAndCompressImage(file);
+      if (bytes > MAX_IMAGE_BYTES) {
+        setError(t('imageTooLarge'));
         return;
       }
-
-      const storageRef = ref(storage, `headers/${currentProfile.uid}`);
-      const uploadTask = uploadBytesResumable(storageRef, file);
-
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          uploadTask.cancel();
-          reject(new Error("Upload timed out (30s)"));
-        }, 30000);
-
-        uploadTask.on('state_changed', 
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setHeaderProgress(progress);
-          }, 
-          (error) => {
-            clearTimeout(timeout);
-            reject(error);
-          }, 
-          () => {
-            clearTimeout(timeout);
-            resolve();
-          }
-        );
-      });
-
-      const url = await getDownloadURL(uploadTask.snapshot.ref);
-      
       const userDocRef = doc(db, 'users', currentProfile.uid);
-      await updateDoc(userDocRef, { headerURL: url });
-      setTargetProfile(prev => prev ? { ...prev, headerURL: url } : null);
+      await updateDoc(userDocRef, { headerURL: dataUrl });
+      setTargetProfile(prev => prev ? { ...prev, headerURL: dataUrl } : null);
+      setHeaderProgress(100);
     } catch (err) {
-      const msg = handleStorageError(err, `headers/${currentProfile.uid}`);
+      const msg = err instanceof Error ? err.message : String(err);
       setError(`Header upload failed: ${msg}`);
     } finally {
       setUploadingHeader(false);
@@ -1957,26 +2247,26 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     const isBlocked = currentProfile.blockedUsers?.includes(targetProfile.uid);
     
     if (isBlocked) {
-      if (window.confirm(`Unblock ${targetProfile.displayName}?`)) {
+      if (window.confirm(t('unblockConfirm').replace('{name}', targetProfile.displayName))) {
         try {
           await updateDoc(doc(db, 'users', currentProfile.uid), {
             blockedUsers: arrayRemove(targetProfile.uid)
           });
-          showToast(`Unblocked ${targetProfile.displayName}`, "success");
+          showToast(t('unblockedToast').replace('{name}', targetProfile.displayName), "success");
         } catch (err) {
-          showToast("Failed to unblock user", "error");
+          showToast(t('unblockFailed'), "error");
         }
       }
     } else {
-      if (window.confirm(`Block ${targetProfile.displayName}? This user's posts will be hidden from your feed.`)) {
+      if (window.confirm(t('blockConfirm').replace('{name}', targetProfile.displayName))) {
         try {
           await updateDoc(doc(db, 'users', currentProfile.uid), {
             blockedUsers: arrayUnion(targetProfile.uid)
           });
-          showToast(`Blocked ${targetProfile.displayName}`, "info");
+          showToast(t('blockedToast').replace('{name}', targetProfile.displayName), "info");
           if (isFollowing) handleFollow(); // Unfollow if blocking
         } catch (err) {
-          showToast("Failed to block user", "error");
+          showToast(t('blockFailed'), "error");
         }
       }
     }
@@ -1988,7 +2278,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     </div>
   );
 
-  if (!targetProfile) return <div className="text-center py-40">User not found</div>;
+  if (!targetProfile) return <div className="text-center py-40">{t('userNotFound')}</div>;
 
   const isOwnProfile = currentProfile?.uid === effectiveUid;
 
@@ -2012,7 +2302,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       {onBack && (
         <button onClick={onBack} className="flex items-center gap-2 text-gray-500 hover:text-black dark:hover:text-white mb-6 transition-colors group">
           <ArrowLeft size={20} className="group-hover:-translate-x-1 transition-transform" />
-          <span className="font-medium">Back</span>
+          <span className="font-medium">{t('back')}</span>
         </button>
       )}
 
@@ -2082,7 +2372,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 value={newBio}
                 onChange={(e) => setNewBio(e.target.value)}
                 className="w-full p-2 rounded-lg border dark:bg-zinc-900 dark:border-zinc-800 text-sm"
-                placeholder="Tell us about yourself..."
+                placeholder={t('bioPlaceholder')}
               />
               <div className="flex gap-2 mt-2">
                 <button onClick={handleUpdateBio} className="flex-1 bg-black dark:bg-white text-white dark:text-black py-1 rounded-lg text-sm font-bold">Save</button>
@@ -2091,13 +2381,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
             </div>
           ) : (
             <div className="mt-4">
-              <p className="text-gray-700 dark:text-gray-300 italic">"{targetProfile.bio || 'No bio yet'}"</p>
-              <button onClick={() => setIsEditing(true)} className="text-xs text-blue-500 mt-2 hover:underline">Edit Bio</button>
+              <p className="text-gray-700 dark:text-gray-300 italic">"{targetProfile.bio || t('noBio')}"</p>
+              <button onClick={() => setIsEditing(true)} className="text-xs text-blue-500 mt-2 hover:underline">{t('editBio')}</button>
             </div>
           )
         ) : (
           <div className="mt-6 flex flex-col items-center gap-4">
-            <p className="text-gray-700 dark:text-gray-300 italic">"{targetProfile.bio || 'No bio yet'}"</p>
+            <p className="text-gray-700 dark:text-gray-300 italic">"{targetProfile.bio || t('noBio')}"</p>
             <div className="flex gap-2">
               <button 
                 onClick={handleFollow}
@@ -2108,7 +2398,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                     : "bg-black dark:bg-white text-white dark:text-black"
                 )}
               >
-                {isFollowing ? 'Following' : 'Follow'}
+                {isFollowing ? t('followingBtn') : t('follow')}
               </button>
               <button 
                 onClick={handleBlock}
@@ -2119,13 +2409,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                     : "bg-gray-100 dark:bg-zinc-800 text-gray-400 hover:text-red-500"
                 )}
               >
-                {currentProfile?.blockedUsers?.includes(targetProfile.uid) ? 'Blocked' : 'Block'}
+                {currentProfile?.blockedUsers?.includes(targetProfile.uid) ? t('blocked') : t('block')}
               </button>
             </div>
           </div>
         )}
 
-        <div className="mt-8 flex justify-center gap-12 border-y border-gray-100 dark:border-zinc-800 py-4">
+        <div className="mt-8 flex justify-center gap-12 border-y border-gray-100 dark:border-zinc-800 py-4 flex-wrap">
           <button 
             onClick={() => setActiveTab('posts')}
             className={cn(
@@ -2134,7 +2424,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
             )}
           >
             <div className="font-bold text-lg">{userPosts.length}</div>
-            <div className="text-[10px] text-gray-400 uppercase tracking-widest">Posts</div>
+            <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('posts')}</div>
           </button>
           <button 
             onClick={() => setActiveTab('followers')}
@@ -2144,7 +2434,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
             )}
           >
             <div className="font-bold text-lg">{stats.followers}</div>
-            <div className="text-[10px] text-gray-400 uppercase tracking-widest">Followers</div>
+            <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('followers')}</div>
           </button>
           <button 
             onClick={() => setActiveTab('following')}
@@ -2154,8 +2444,20 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
             )}
           >
             <div className="font-bold text-lg">{stats.following}</div>
-            <div className="text-[10px] text-gray-400 uppercase tracking-widest">Following</div>
+            <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('following')}</div>
           </button>
+          {isOwnProfile && (
+            <button 
+              onClick={() => setActiveTab('settings')}
+              className={cn(
+                "text-center transition-all hover:scale-105",
+                activeTab === 'settings' ? "opacity-100" : "opacity-50"
+              )}
+            >
+              <div className="font-bold text-lg">SET</div>
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('settings')}</div>
+            </button>
+          )}
         </div>
       </div>
 
@@ -2180,7 +2482,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
               />
             ))}
             {userPosts.length === 0 && (
-              <div className="text-center py-20 text-gray-400">No posts yet</div>
+              <div className="text-center py-20 text-gray-400">{t('noPosts')}</div>
             )}
           </motion.div>
         )}
@@ -2208,7 +2510,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
               </div>
             ))}
             {followerProfiles.length === 0 && (
-              <div className="text-center py-20 text-gray-400">No followers yet</div>
+              <div className="text-center py-20 text-gray-400">{t('noFollowers')}</div>
             )}
           </motion.div>
         )}
@@ -2236,8 +2538,62 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
               </div>
             ))}
             {followingProfiles.length === 0 && (
-              <div className="text-center py-20 text-gray-400">Not following anyone yet</div>
+              <div className="text-center py-20 text-gray-400">{t('noFollowing')}</div>
             )}
+          </motion.div>
+        )}
+
+        {activeTab === 'settings' && isOwnProfile && (
+          <motion.div 
+            key="settings"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="space-y-4"
+          >
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('appSettings')}</div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-bold text-sm">{t('theme')}</div>
+                  <div className="text-xs text-gray-400">{darkMode ? t('dark') : t('light')}</div>
+                </div>
+                <button
+                  onClick={() => setDarkMode(!darkMode)}
+                  className="px-3 py-1.5 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  {darkMode ? t('dark') : t('light')}
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('language')}</div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setLanguage('ru')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                    language === 'ru'
+                      ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                      : "border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                  )}
+                >
+                  Русский
+                </button>
+                <button
+                  onClick={() => setLanguage('en')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                    language === 'en'
+                      ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                      : "border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                  )}
+                >
+                  English
+                </button>
+              </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -2247,6 +2603,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
 function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string) => void, onOpenProfile: (uid: string) => void, key?: string }) {
   const { profile } = useAuth();
+  const { t } = useSettings();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [search, setSearch] = useState('');
   const [followingUids, setFollowingUids] = useState<string[]>([]);
@@ -2310,14 +2667,14 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
 
   return (
     <div className="max-w-xl mx-auto py-20 px-4">
-      <h2 className="text-3xl font-bold mb-8 tracking-tight">Messages</h2>
+      <h2 className="text-3xl font-bold mb-8 tracking-tight">{t('messages')}</h2>
       
       <div className="relative mb-8">
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search people..."
+          placeholder={t('searchPeople')}
           className="w-full bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl pl-12 pr-4 py-4 focus:outline-none focus:ring-1 focus:ring-black dark:focus:ring-white transition-all shadow-sm"
         />
       </div>
@@ -2354,7 +2711,7 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
 
           {followingUsers.length > 0 && (
             <div className="mb-10">
-              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Following</h3>
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">{t('followingTitle')}</h3>
               <div className="space-y-3">
                 {followingUsers.map(user => (
                   <div
@@ -2424,6 +2781,8 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
 
 function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBack: () => void, onOpenImage: (url: string) => void, key?: string }) {
   const { profile } = useAuth();
+  const { t } = useSettings();
+  const { showToast } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -2483,6 +2842,27 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !profile) return;
+    if (!STORAGE_ENABLED) {
+      try {
+        const { dataUrl, bytes } = await readAndCompressImage(file);
+        if (bytes > MAX_IMAGE_BYTES) {
+          showToast(t('imageTooLarge'), 'error');
+          return;
+        }
+        await addDoc(collection(db, 'messages'), {
+          senderUid: profile.uid,
+          receiverUid,
+          text: '',
+          imageUrl: dataUrl,
+          createdAt: serverTimestamp(),
+          read: false
+        });
+        return;
+      } catch (err) {
+        showToast(String(err), 'error');
+        return;
+      }
+    }
 
     setUploading(true);
     const storageRef = ref(storage, `chats/${profile.uid}/${Date.now()}_${file.name}`);
@@ -2525,10 +2905,10 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
               <div>
                 <div className="font-bold text-sm">{receiver.displayName}</div>
                 {receiver.isOnline ? (
-                  <div className="text-[10px] text-green-500 font-bold uppercase tracking-widest">Online</div>
+                  <div className="text-[10px] text-green-500 font-bold uppercase tracking-widest">{t('online')}</div>
                 ) : (
                   <div className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
-                    Last seen {receiver.lastSeen ? formatDistanceToNow(receiver.lastSeen.toDate(), { addSuffix: true }) : 'recently'}
+                    {t('lastSeen')} {receiver.lastSeen ? formatDistanceToNow(receiver.lastSeen.toDate(), { addSuffix: true }) : t('recently')}
                   </div>
                 )}
               </div>
@@ -2574,7 +2954,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                   {m.createdAt ? format(m.createdAt.toDate(), 'HH:mm') : ''}
                   {isMe && (
                     <span className={cn(m.read ? "text-blue-500" : "text-gray-400")}>
-                      {m.read ? 'Read' : 'Sent'}
+                      {m.read ? t('read') : t('sent')}
                     </span>
                   )}
                 </div>
@@ -2587,7 +2967,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             <div className="p-4 bg-gray-100 dark:bg-zinc-800 rounded-full">
               <MessageSquare size={32} />
             </div>
-            <p className="text-sm font-medium">Start a conversation with {receiver?.displayName}</p>
+            <p className="text-sm font-medium">{t('startConversation')} {receiver?.displayName}</p>
           </div>
         )}
       </div>
@@ -2612,7 +2992,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Type a message..."
+            placeholder={t('typeMessage')}
             className="flex-1 bg-transparent border-none focus:outline-none text-sm px-2"
             disabled={uploading}
           />
@@ -2631,20 +3011,350 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
 
 function Login() {
   const { signIn } = useAuth();
+  const { t, language, setLanguage } = useSettings();
   return (
-    <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-black p-4">
-      <div className="text-center max-w-sm w-full">
-        <div className="w-16 h-16 bg-black dark:bg-white rounded-2xl mx-auto mb-8 flex items-center justify-center">
-          <div className="w-8 h-8 border-4 border-white dark:border-black rounded-full" />
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-gray-50 via-white to-gray-100 dark:from-black dark:via-zinc-950 dark:to-black p-4">
+      <div className="max-w-md w-full">
+        <div className="bg-white/90 dark:bg-zinc-900/80 border border-gray-100 dark:border-zinc-800 rounded-3xl p-8 shadow-2xl backdrop-blur">
+          <div className="flex items-center justify-between mb-6">
+            <div className="w-12 h-12 bg-black dark:bg-white rounded-2xl flex items-center justify-center">
+              <div className="w-6 h-6 border-2 border-white dark:border-black rounded-full" />
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setLanguage('ru')}
+                className={cn(
+                  "px-2.5 py-1 rounded-full text-xs font-bold border transition-colors",
+                  language === 'ru'
+                    ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                    : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                )}
+              >
+                RU
+              </button>
+              <button
+                onClick={() => setLanguage('en')}
+                className={cn(
+                  "px-2.5 py-1 rounded-full text-xs font-bold border transition-colors",
+                  language === 'en'
+                    ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                    : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                )}
+              >
+                EN
+              </button>
+            </div>
+          </div>
+          <h1 className="text-4xl font-bold tracking-tighter mb-3">{t('loginTitle')}</h1>
+          <p className="text-gray-500 mb-8">{t('loginSubtitle')}</p>
+          <button 
+            onClick={signIn}
+            className="w-full bg-black dark:bg-white text-white dark:text-black py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity flex items-center justify-center gap-3 shadow-xl"
+          >
+            {t('continueGoogle')}
+          </button>
         </div>
-        <h1 className="text-4xl font-bold tracking-tighter mb-4">MINIMAL</h1>
-        <p className="text-gray-500 mb-8">A social space for clear thoughts and meaningful connections.</p>
-        <button 
-          onClick={signIn}
-          className="w-full bg-black dark:bg-white text-white dark:text-black py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity flex items-center justify-center gap-3 shadow-xl"
-        >
-          Continue with Google
-        </button>
+        <div className="text-center text-[11px] text-gray-400 mt-4">
+          {t('uploadNote')}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
+  const { user, profile } = useAuth();
+  const { t } = useSettings();
+  const { showToast } = useToast();
+  const [step, setStep] = useState(0);
+  const [showDone, setShowDone] = useState(false);
+  const [username, setUsername] = useState(profile?.username || '');
+  const [displayName, setDisplayName] = useState(profile?.displayName || user?.displayName || '');
+  const [avatarUrl, setAvatarUrl] = useState(profile?.photoURL || '');
+  const [bannerUrl, setBannerUrl] = useState(profile?.headerURL || '');
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!user) return null;
+
+  const totalSteps = 4;
+
+  const validateUrl = (value: string) => {
+    if (!value.trim()) return true;
+    return /^https?:\/\/.+/i.test(value.trim());
+  };
+
+  const handleCheckUsername = async () => {
+    const value = username.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(value)) {
+      setError(t('usernameHint'));
+      return false;
+    }
+    setChecking(true);
+    try {
+      const q = query(collection(db, 'users'), where('usernameLower', '==', value), limit(1));
+      const snap = await getDocs(q);
+      if (!snap.empty && snap.docs[0].id !== user.uid) {
+        setError(t('usernameTaken'));
+        return false;
+      }
+      setError(null);
+      return true;
+    } catch (err) {
+      setError(String(err));
+      return false;
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleNext = async () => {
+    if (step === 1) {
+      const ok = await handleCheckUsername();
+      if (!ok) return;
+    }
+    if (step === 2) {
+      if (!displayName.trim()) {
+        setError(t('namePlaceholder'));
+        return;
+      }
+      setError(null);
+    }
+    if (step === 3) {
+      if (!validateUrl(avatarUrl) || !validateUrl(bannerUrl)) {
+        setError(t('urlInvalid'));
+        return;
+      }
+      setError(null);
+      await handleFinish();
+      return;
+    }
+    setStep(prev => Math.min(prev + 1, totalSteps - 1));
+  };
+
+  const handleFinish = async () => {
+    try {
+      const usernameLower = username.trim().toLowerCase();
+      const photoURL = avatarUrl.trim() || user.photoURL || profile?.photoURL || '';
+      const headerURL = bannerUrl.trim() || profile?.headerURL || '';
+      const userDocRef = doc(db, 'users', user.uid);
+      await setDoc(userDocRef, {
+        uid: user.uid,
+        username: username.trim(),
+        usernameLower,
+        displayName: displayName.trim(),
+        email: user.email || '',
+        photoURL,
+        headerURL,
+        bio: profile?.bio || '',
+        createdAt: profile?.createdAt || serverTimestamp(),
+        isOnline: true,
+        lastSeen: serverTimestamp()
+      }, { merge: true });
+      showToast(t('welcomeMessage'), 'success');
+      setShowDone(true);
+      setTimeout(() => onComplete(), 1600);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handleAvatarFile = async (file: File) => {
+    try {
+      const { dataUrl, bytes } = await readAndCompressImage(file);
+      if (bytes > MAX_IMAGE_BYTES) {
+        setError(t('imageTooLarge'));
+        return;
+      }
+      setAvatarUrl(dataUrl);
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handleBannerFile = async (file: File) => {
+    try {
+      const { dataUrl, bytes } = await readAndCompressImage(file);
+      if (bytes > MAX_IMAGE_BYTES) {
+        setError(t('imageTooLarge'));
+        return;
+      }
+      setBannerUrl(dataUrl);
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-gray-50 via-white to-gray-100 dark:from-black dark:via-zinc-950 dark:to-black p-4">
+      <div className="max-w-xl w-full">
+        <div className="bg-white/90 dark:bg-zinc-900/80 border border-gray-100 dark:border-zinc-800 rounded-3xl p-8 shadow-2xl backdrop-blur">
+          <div className="flex items-center justify-between mb-6">
+            <div className="w-12 h-12 bg-black dark:bg-white rounded-2xl flex items-center justify-center">
+              <div className="w-6 h-6 border-2 border-white dark:border-black rounded-full" />
+            </div>
+            <div className="text-xs text-gray-400 font-bold uppercase tracking-widest">
+              {t('step')} {step + 1}/{totalSteps}
+            </div>
+          </div>
+
+          <div className="h-1.5 bg-gray-100 dark:bg-zinc-800 rounded-full overflow-hidden mb-6">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${((step + 1) / totalSteps) * 100}%` }}
+              transition={{ duration: 0.4 }}
+              className="h-full bg-black dark:bg-white"
+            />
+          </div>
+
+          {showDone ? (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-center py-8"
+            >
+              <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-black dark:bg-white flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-white dark:border-black rounded-full" />
+              </div>
+              <h2 className="text-2xl font-bold mb-2">{t('welcomeDone')}</h2>
+              <p className="text-gray-500">{t('welcomeMessage')}</p>
+            </motion.div>
+          ) : step === 0 && (
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight mb-3">{t('welcome')}</h1>
+              <p className="text-gray-500 mb-6">{t('onboardingSubtitle')}</p>
+              <div className="bg-gray-50 dark:bg-zinc-900/60 border border-gray-100 dark:border-zinc-800 rounded-2xl p-4 text-sm">
+                <div className="font-bold">{user.email}</div>
+                <div className="text-xs text-gray-400">{user.displayName || 'Google Account'}</div>
+              </div>
+            </div>
+          )}
+
+          {step === 1 && (
+            <div>
+              <h2 className="text-2xl font-bold mb-2">{t('chooseUsername')}</h2>
+              <p className="text-gray-500 text-sm mb-4">{t('usernameHint')}</p>
+              <input
+                value={username}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  setError(null);
+                }}
+                placeholder={t('usernamePlaceholder')}
+                className="w-full bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+              />
+              {checking && <div className="text-xs text-gray-400 mt-2">{t('checking')}</div>}
+              {!checking && error === t('usernameTaken') && (
+                <div className="text-xs text-red-500 mt-2">{t('usernameTaken')}</div>
+              )}
+              {!checking && !error && username.trim() && (
+                <div className="text-xs text-green-600 mt-2">{t('usernameAvailable')}</div>
+              )}
+            </div>
+          )}
+
+          {step === 2 && (
+            <div>
+              <h2 className="text-2xl font-bold mb-2">{t('yourName')}</h2>
+              <input
+                value={displayName}
+                onChange={(e) => {
+                  setDisplayName(e.target.value);
+                  setError(null);
+                }}
+                placeholder={t('namePlaceholder')}
+                className="w-full bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+              />
+            </div>
+          )}
+
+          {step === 3 && (
+            <div>
+              <h2 className="text-2xl font-bold mb-2">{t('optionalMedia')}</h2>
+              <p className="text-xs text-gray-400 mb-4">{t('uploadNote')}</p>
+              <div className="space-y-3">
+                <input
+                  value={avatarUrl}
+                  onChange={(e) => setAvatarUrl(e.target.value)}
+                  placeholder={t('avatarUrl')}
+                  className="w-full bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                />
+                <input
+                  value={bannerUrl}
+                  onChange={(e) => setBannerUrl(e.target.value)}
+                  placeholder={t('bannerUrl')}
+                  className="w-full bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                />
+                <div className="flex gap-2 flex-wrap">
+                  <label className="px-3 py-1.5 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 cursor-pointer">
+                    {t('uploadAvatar')}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleAvatarFile(f);
+                      }}
+                    />
+                  </label>
+                  <label className="px-3 py-1.5 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 cursor-pointer">
+                    {t('uploadBanner')}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleBannerFile(f);
+                      }}
+                    />
+                  </label>
+                </div>
+                {(avatarUrl || bannerUrl) && (
+                  <div className="grid grid-cols-2 gap-3">
+                    {avatarUrl && (
+                      <div className="bg-gray-50 dark:bg-zinc-800 rounded-2xl p-2 flex items-center justify-center">
+                        <img src={avatarUrl} className="w-16 h-16 rounded-full object-cover" />
+                      </div>
+                    )}
+                    {bannerUrl && (
+                      <div className="bg-gray-50 dark:bg-zinc-800 rounded-2xl p-2">
+                        <img src={bannerUrl} className="w-full h-16 rounded-xl object-cover" />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="mt-4 text-xs text-red-500">{error}</div>
+          )}
+
+          {!showDone && (
+            <div className="mt-8 flex gap-2">
+              {step > 0 && (
+              <button
+                onClick={() => setStep(prev => Math.max(prev - 1, 0))}
+                className="flex-1 bg-gray-100 dark:bg-zinc-800 py-2 rounded-xl text-xs font-bold"
+              >
+                {t('back')}
+              </button>
+              )}
+              <button
+                onClick={handleNext}
+                disabled={checking}
+                className="flex-1 bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-50"
+              >
+                {step === totalSteps - 1 ? t('finish') : t('next')}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -2662,6 +3372,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
   key?: string
 }) {
   const { profile } = useAuth();
+  const { t } = useSettings();
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentText, setCommentText] = useState('');
   const [likedByUsers, setLikedByUsers] = useState<UserProfile[]>([]);
@@ -2730,7 +3441,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
         className="flex items-center gap-2 text-gray-500 hover:text-black dark:hover:text-white mb-6 transition-colors group"
       >
         <ArrowLeft size={20} className="group-hover:-translate-x-1 transition-transform" />
-        <span className="font-medium">Back</span>
+        <span className="font-medium">{t('back')}</span>
       </button>
 
       <PostCard post={post} onOpenProfile={onOpenProfile} onHashtagClick={onHashtagClick} onOpenImage={onOpenImage} onShowLikes={onShowLikes} />
@@ -2769,7 +3480,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
             type="text"
             value={commentText}
             onChange={(e) => setCommentText(e.target.value)}
-            placeholder="Write a comment..."
+            placeholder={t('commentPlaceholder')}
             className="flex-1 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-full px-4 py-2 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors"
           />
           <button 
@@ -2797,7 +3508,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
             </div>
           ))}
           {comments.length === 0 && (
-            <div className="text-center py-10 text-gray-400 text-sm">No comments yet. Be the first to comment!</div>
+            <div className="text-center py-10 text-gray-400 text-sm">{t('noComments')}</div>
           )}
         </div>
       </div>
@@ -2808,6 +3519,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
 function LikesModal({ postId, onClose, onOpenProfile }: { postId: string, onClose: () => void, onOpenProfile: (uid: string) => void }) {
   const [likes, setLikes] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const { t } = useSettings();
 
   useEffect(() => {
     const fetchLikes = async () => {
@@ -2834,7 +3546,7 @@ function LikesModal({ postId, onClose, onOpenProfile }: { postId: string, onClos
         className="bg-white dark:bg-zinc-900 w-full max-w-sm rounded-3xl overflow-hidden shadow-2xl"
       >
         <div className="p-4 border-b dark:border-zinc-800 flex justify-between items-center bg-gray-50/50 dark:bg-zinc-800/50">
-          <h3 className="font-bold">Liked by</h3>
+          <h3 className="font-bold">{t('likedBy')}</h3>
           <button onClick={onClose} className="p-2 hover:bg-gray-200 dark:hover:bg-zinc-700 rounded-full transition-colors">
             <X size={20} />
           </button>
@@ -2845,7 +3557,7 @@ function LikesModal({ postId, onClose, onOpenProfile }: { postId: string, onClos
               <div className="w-6 h-6 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
             </div>
           ) : likes.length === 0 ? (
-            <div className="text-center py-10 text-gray-400 text-sm">No likes yet</div>
+            <div className="text-center py-10 text-gray-400 text-sm">{t('noLikes')}</div>
           ) : (
             likes.map(user => (
               <button
@@ -2870,6 +3582,7 @@ function LikesModal({ postId, onClose, onOpenProfile }: { postId: string, onClos
 function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?: string }) {
   const { profile } = useAuth();
   const { showToast } = useToast();
+  const { t } = useSettings();
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
   useEffect(() => {
@@ -2899,13 +3612,13 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
   };
 
   const handleClearAll = async () => {
-    if (window.confirm('Clear all notifications?')) {
+    if (window.confirm(t('clearNotificationsConfirm'))) {
       try {
         const batch = notifications.map(n => deleteDoc(doc(db, 'notifications', n.id)));
         await Promise.all(batch);
-        showToast("Notifications cleared", "info");
+        showToast(t('notificationsCleared'), "info");
       } catch (err) {
-        showToast("Failed to clear notifications", "error");
+        showToast(t('failedClearNotifications'), "error");
       }
     }
   };
@@ -2915,46 +3628,46 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
       const unread = notifications.filter(n => !n.read);
       const batch = unread.map(n => updateDoc(doc(db, 'notifications', n.id), { read: true }));
       await Promise.all(batch);
-      showToast("All marked as read", "success");
+      showToast(t('markAllReadSuccess'), "success");
     } catch (err) {
-      showToast("Failed to mark as read", "error");
+      showToast(t('failedMarkRead'), "error");
     }
   };
 
   const getMessage = (n: Notification) => {
     switch(n.type) {
-      case 'like': return 'liked your post';
-      case 'comment': return 'commented on your post';
-      case 'follow': return 'started following you';
-      case 'repost': return 'reposted your post';
-      default: return 'interacted with you';
+      case 'like': return t('likeMessage');
+      case 'comment': return t('commentMessage');
+      case 'follow': return t('followMessage');
+      case 'repost': return t('repostMessage');
+      default: return t('interactedMessage');
     }
   };
 
   return (
     <div className="max-w-xl mx-auto py-20 px-4">
       <div className="flex justify-between items-center mb-8">
-        <h2 className="text-3xl font-bold tracking-tight">Notifications</h2>
+        <h2 className="text-3xl font-bold tracking-tight">{t('notificationsTitle')}</h2>
         {notifications.length > 0 && (
           <div className="flex gap-2">
             <button 
               onClick={handleMarkAllRead}
               className="text-xs font-bold text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 px-3 py-1.5 rounded-full transition-colors"
             >
-              Mark all as read
+              {t('markAllRead')}
             </button>
             <button 
               onClick={handleClearAll}
               className="text-xs font-bold text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-3 py-1.5 rounded-full transition-colors"
             >
-              Clear all
+              {t('clearAll')}
             </button>
           </div>
         )}
       </div>
       <div className="space-y-3">
         {notifications.length === 0 && (
-          <div className="text-center py-10 text-gray-400">No notifications yet</div>
+          <div className="text-center py-10 text-gray-400">{t('notificationsEmpty')}</div>
         )}
         {notifications.map(n => (
           <div 
@@ -2983,7 +3696,8 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 }
 
 function SocialApp() {
-  const { user, loading, profile, logout } = useAuth();
+  const { user, loading, profile, logout, needsOnboarding } = useAuth();
+  const { darkMode, setDarkMode } = useSettings();
   const [view, setView] = useState<View>('feed');
   const [selectedChat, setSelectedChat] = useState<string | null>(null);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
@@ -2991,12 +3705,11 @@ function SocialApp() {
   const [activeHashtag, setActiveHashtag] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [likesPostId, setLikesPostId] = useState<string | null>(null);
-  const [darkMode, setDarkMode] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(needsOnboarding);
 
   useEffect(() => {
-    if (darkMode) document.documentElement.classList.add('dark');
-    else document.documentElement.classList.remove('dark');
-  }, [darkMode]);
+    setShowOnboarding(needsOnboarding);
+  }, [needsOnboarding]);
 
   if (loading) return (
     <div className="h-screen flex items-center justify-center dark:bg-black">
@@ -3005,6 +3718,10 @@ function SocialApp() {
   );
 
   if (!user) return <Login />;
+
+  if (showOnboarding) {
+    return <OnboardingWizard onComplete={() => setShowOnboarding(false)} />;
+  }
 
   const handleOpenPost = (post: Post) => {
     setSelectedPost(post);
@@ -3030,7 +3747,7 @@ function SocialApp() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-black text-black dark:text-white transition-colors">
+      <div className="min-h-screen bg-gray-50 dark:bg-black text-black dark:text-white transition-colors">
       <Navbar 
         currentView={view} 
         setView={setView} 
@@ -3134,7 +3851,7 @@ function SocialApp() {
           />
         )}
       </AnimatePresence>
-    </div>
+      </div>
   );
 }
 
@@ -3171,10 +3888,12 @@ function ErrorFallback({ error, resetErrorBoundary }: { error: any, resetErrorBo
 
 export default function App() {
   return (
-    <AuthProvider>
-      <ToastProvider>
-        <SocialApp />
-      </ToastProvider>
-    </AuthProvider>
+    <SettingsProvider>
+      <AuthProvider>
+        <ToastProvider>
+          <SocialApp />
+        </ToastProvider>
+      </AuthProvider>
+    </SettingsProvider>
   );
 }
