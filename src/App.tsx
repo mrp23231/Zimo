@@ -936,12 +936,13 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return;
 
-    // Set online status
+    // Set online status - only update if needed
     const userDocRef = doc(db, 'users', user.uid);
-    updateDoc(userDocRef, { 
+    const setOnline = () => updateDoc(userDocRef, { 
       isOnline: true, 
       lastSeen: serverTimestamp() 
     }).catch(console.error);
+    setOnline();
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -959,11 +960,15 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
         if (docSnap.exists()) {
           const data = docSnap.data() as UserProfile;
           const normalizedUsername = data.username ? normalizeUsername(data.username) : '';
-          if (data.username && data.username !== normalizedUsername) {
-            updateDoc(userDocRef, {
-              username: normalizedUsername,
-              usernameLower: normalizedUsername.toLowerCase()
-            }).catch(console.error);
+          const needsNormalization = data.username && data.username !== normalizedUsername;
+          if (needsNormalization) {
+            // Only normalize once - skip if already normalized
+            setTimeout(() => {
+              updateDoc(userDocRef, {
+                username: normalizedUsername,
+                usernameLower: normalizedUsername.toLowerCase()
+              }).catch(console.error);
+            }, 1000);
           }
           setProfile(data);
           const nextSync = {
