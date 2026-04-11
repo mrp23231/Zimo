@@ -1,4 +1,4 @@
-import { Client, Account, Databases, Storage, OAuthProvider, ID, Query } from 'appwrite';
+import { Client, Account, Databases, Storage, ID, Query } from 'appwrite';
 
 const PROJECT_ID = '69d9e24e0011cbc31ed4';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
@@ -22,18 +22,12 @@ export const storage = new Storage(client);
 
 export const auth = {
     async signInWithGoogle() {
-        const oauth = new OAuthProvider('google')
-            .setClientId(GOOGLE_CLIENT_ID)
-            .setSecret(GOOGLE_CLIENT_SECRET)
-            .setScopes(['email', 'profile'])
-            .redirectTo(ENDPOINT + '/auth');
-        
-        return account.createOAuth2Session(
-            'google',
-            ENDPOINT + '/auth',
-            ENDPOINT + '/auth/failure',
-            oauth.scopes
-        );
+        // Appwrite OAuth - redirect to Appwrite auth page
+        const url = new URL(ENDPOINT + '/auth/oauth2/google');
+        url.searchParams.set('clientId', GOOGLE_CLIENT_ID);
+        url.searchParams.set('redirect', ENDPOINT + '/auth');
+        url.searchParams.set('scopes', 'email profile');
+        window.location.href = url.toString();
     },
     
     async signOut() {
