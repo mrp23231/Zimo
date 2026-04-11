@@ -256,6 +256,9 @@ interface Comment {
   authorPhoto: string;
   text: string;
   createdAt: Timestamp;
+  likes: number;
+  likedBy: string[];
+  parentId?: string;
 }
 
 interface Message {
@@ -1760,6 +1763,21 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     }
   };
 
+  const handleCommentLike = async (commentId: string, currentLikes: number = 0, likedBy: string[] = []) => {
+    if (!profile) return;
+    try {
+      const isLiked = likedBy.includes(profile.uid);
+      await updateDoc(doc(db, 'posts', post.id, 'comments', commentId), {
+        likes: isLiked ? currentLikes - 1 : currentLikes + 1,
+        likedBy: isLiked 
+          ? likedBy.filter(uid => uid !== profile.uid)
+          : [...likedBy, profile.uid]
+      });
+    } catch (err) {
+      console.error("Error liking comment:", err);
+    }
+  };
+
   const handleReport = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (window.confirm(t('reportConfirm'))) {
@@ -1908,11 +1926,11 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           <div className="flex gap-1">
             <button 
               onClick={(e) => { e.stopPropagation(); setIsEditing(!isEditing); }} 
-              className="p-2 text-gray-300 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-all rounded-full hover:bg-blue-50 dark:hover:bg-blue-900/20"
+              className="p-2 text-gray-300 hover:text-blue-500 transition-all rounded-full hover:bg-blue-50 dark:hover:bg-blue-900/20"
             >
-              <PlusCircle size={16} className="rotate-45" />
+              <Edit3 size={16} />
             </button>
-            <button onClick={handleDelete} className="p-2 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all rounded-full hover:bg-red-50 dark:hover:bg-red-900/20">
+            <button onClick={handleDelete} className="p-2 text-gray-300 hover:text-red-500 transition-all rounded-full hover:bg-red-50 dark:hover:bg-red-900/20">
               <Trash2 size={16} />
             </button>
           </div>
@@ -2075,7 +2093,14 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
                       <div className="font-semibold text-xs mb-1">{comment.authorName}</div>
                       <p className="text-sm dark:text-gray-300">{comment.text}</p>
                     </div>
-                    {profile?.uid === comment.authorUid && (
+                    <button 
+                      onClick={() => handleCommentLike(comment.id, comment.likes || 0, comment.likedBy || [])}
+                      className={`mt-1 flex items-center gap-1 text-xs ${(comment.likedBy || []).includes(profile?.uid || '') ? 'text-red-500' : 'text-gray-400 hover:text-red-500'}`}
+                    >
+                      <Heart size={12} fill={(comment.likedBy || []).includes(profile?.uid || '') ? 'currentColor' : 'none'} />
+                      <span>{comment.likes || 0}</span>
+                    </button>
+                    {(profile?.uid === comment.authorUid || profile?.uid === post.authorUid) && (
                       <button 
                         onClick={() => handleDeleteComment(comment.id)}
                         className="absolute -right-2 -top-2 p-1.5 bg-white dark:bg-zinc-800 border border-gray-100 dark:border-zinc-700 rounded-full text-gray-400 hover:text-red-500 opacity-0 group-hover/comment:opacity-100 transition-all shadow-sm"
