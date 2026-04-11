@@ -1487,10 +1487,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
     <>
     <nav className="fixed bottom-0 left-0 right-0 md:top-0 md:bottom-auto bg-white/80 dark:bg-black/80 backdrop-blur-md border-t md:border-t-0 md:border-b border-gray-200 dark:border-gray-800 z-50">
       <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-        {profile?.photoURL && (
-                  <img src={profile.photoURL} className="w-8 h-8 rounded-full object-cover cursor-pointer hidden md:block" referrerPolicy="no-referrer" onClick={() => setView('profile')} />
-                )}
-                <div className="font-bold text-xl tracking-tighter cursor-pointer" onClick={() => setView('feed')}>ZIMO</div>
+        <div className="font-bold text-xl tracking-tighter cursor-pointer" onClick={() => setView('feed')}>ZIMO</div>
         
         <div className="flex-1 max-w-xs relative hidden sm:block">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
@@ -1561,6 +1558,9 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
           })}
         </div>
         <div className="flex items-center gap-4">
+          {profile?.photoURL && (
+            <img src={profile.photoURL} className="w-8 h-8 rounded-full object-cover cursor-pointer" referrerPolicy="no-referrer" onClick={() => setView('profile')} />
+          )}
           <button onClick={() => setDarkMode(!darkMode)} className="p-2 text-gray-500 hover:text-black dark:hover:text-white transition-colors">
             {darkMode ? <Sun size={20} /> : <Moon size={20} />}
           </button>
