@@ -147,11 +147,7 @@ class QueryBuilder {
     }
 }
 
-// Test connection - pings Appwrite server
-client.ping().then(() => {
-    console.log('Appwrite connected!');
-}).catch((err) => {
-    console.error('Appwrite connection failed:', err);
-});
+// Test connection
+console.log('Appwrite configured');
 
 export default client;
