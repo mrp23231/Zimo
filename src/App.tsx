@@ -212,12 +212,14 @@ interface UserProfile {
   isOnline?: boolean;
   lastSeen?: Timestamp;
   blockedUsers?: string[];
+  isPrivate?: boolean;
 }
 
 interface Follow {
   id: string;
   followerUid: string;
   followingUid: string;
+  status?: 'pending' | 'approved' | 'rejected';
   createdAt: Timestamp;
 }
 
@@ -307,6 +309,12 @@ const translations = {
     logout: 'Log out',
     pushNotifications: 'Push notifications',
     pushNotificationsHint: 'Browser desktop notifications',
+    privateAccount: 'Private account',
+    privateAccountHint: 'Only approved followers can see your posts',
+    followRequested: 'Follow requested',
+    followApprove: 'Approve',
+    followReject: 'Reject',
+    followRequest: 'Follow request',
     deleteAccount: 'Delete account',
     deleteAccountConfirm: 'Are you sure you want to delete your account? This cannot be undone.',
     welcome: 'Welcome to Zimo',
@@ -512,6 +520,12 @@ const translations = {
     logout: 'Выйти',
     pushNotifications: 'Push-уведомления',
     pushNotificationsHint: 'Уведомления в браузере',
+    privateAccount: 'Закрытый аккаунт',
+    privateAccountHint: 'Только одобренные подписчики видят посты',
+    followRequested: 'Запрос на подписку',
+    followApprove: 'Одобрить',
+    followReject: 'Отклонить',
+    followRequest: 'Запрос на подписку',
     deleteAccount: 'Удалить аккаунт',
     deleteAccountConfirm: 'Вы уверены, что хотите удалить аккаунт? Это действие необратимо.',
     welcome: 'Добро пожаловать в Zimo',
@@ -2612,6 +2626,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [editCity, setEditCity] = useState('');
   const [editBirthdate, setEditBirthdate] = useState('');
   const [editHideEmail, setEditHideEmail] = useState(false);
+  const [editIsPrivate, setEditIsPrivate] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(() => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
@@ -2692,7 +2707,16 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
     if (currentProfile && effectiveUid !== currentProfile.uid) {
       const followRef = doc(db, 'follows', currentProfile.uid + '_' + effectiveUid);
-      const unsubFollowStatus = onSnapshot(followRef, (doc) => setIsFollowing(doc.exists()));
+      const unsubFollowStatus = onSnapshot(followRef, (doc) => {
+        if (!doc.exists()) {
+          setIsFollowing(false);
+        } else {
+          const data = doc.data();
+          // For private accounts, need approved status to be following
+          const isApproved = data?.status === 'approved' || !targetProfile?.isPrivate;
+          setIsFollowing(isApproved);
+        }
+      });
       return () => {
         unsubscribe();
         unsubFollowers();
@@ -2715,6 +2739,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     setEditCity(targetProfile.city || '');
     setEditBirthdate(targetProfile.birthdate || '');
     setEditHideEmail(!!targetProfile.hideEmail);
+    setEditIsPrivate(!!targetProfile.isPrivate);
   }, [isOwnProfile, targetProfile?.uid]);
 
   const handleUpdateBio = async () => {
@@ -2805,7 +2830,8 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         bio: editBio.trim(),
         city: editCity.trim(),
         birthdate: editBirthdate || '',
-        hideEmail: editHideEmail
+        hideEmail: editHideEmail,
+        isPrivate: editIsPrivate
       };
       await updateDoc(doc(db, 'users', currentProfile.uid), updates);
       setTargetProfile(prev => prev ? { ...prev, ...updates } : null);
@@ -2827,15 +2853,18 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     if (isFollowing) {
       await deleteDoc(doc(db, 'follows', followId));
     } else {
+      // If target account is private, create a pending request instead of direct follow
+      const status = targetProfile?.isPrivate ? 'pending' : 'approved';
       await setDoc(doc(db, 'follows', followId), {
         followerUid: currentProfile.uid,
         followingUid: effectiveUid,
+        status,
         createdAt: serverTimestamp()
       });
       
-      // Notification
+      // Notification - for both private and public accounts
       await addDoc(collection(db, 'notifications'), {
-        type: 'follow',
+        type: targetProfile?.isPrivate ? 'follow_request' : 'follow',
         fromUid: currentProfile.uid,
         fromName: currentProfile.displayName,
         fromPhoto: currentProfile.photoURL,
@@ -2843,6 +2872,10 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         createdAt: serverTimestamp(),
         read: false
       });
+      
+      if (targetProfile?.isPrivate) {
+        showToast(t('followRequested'), "info");
+      }
     }
   };
 
@@ -3095,6 +3128,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
             exit={{ opacity: 0, y: -10 }}
             className="grid grid-cols-1 gap-4"
           >
+            {/* Show private message for private accounts that viewer can't see */}
+            {!isOwnProfile && targetProfile?.isPrivate && !isFollowing && (
+              <div className="text-center py-20 text-gray-400">
+                <div className="text-lg font-bold mb-2">{t('privateAccount')}</div>
+                <div className="text-sm">{t('privateAccountHint')}</div>
+              </div>
+            )}
             {userPosts.map(post => (
               <PostCard 
                 key={post.id} 
@@ -3235,6 +3275,23 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                     )}
                   >
                     {editHideEmail ? t('on') : t('off')}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+                  <div>
+                    <div className="text-sm font-bold">{t('privateAccount')}</div>
+                    <div className="text-[11px] text-gray-400">{t('privateAccountHint')}</div>
+                  </div>
+                  <button
+                    onClick={() => setEditIsPrivate(!editIsPrivate)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                      editIsPrivate
+                        ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                        : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                    )}
+                  >
+                    {editIsPrivate ? t('on') : t('off')}
                   </button>
                 </div>
                 <button
