@@ -6,4 +6,4 @@ coverage/
 *.log
 .env*
 !.env.example
-appwrite-config.json
+# appwrite-config.json - keep in repo for OAuth (safe for client)

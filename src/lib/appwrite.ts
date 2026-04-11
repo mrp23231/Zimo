@@ -1,7 +1,8 @@
 import { Client, Account, Databases, Storage, OAuthProvider, ID, Query } from 'appwrite';
-import appwriteConfig from '../../appwrite-config.json'; // eslint-disable-line
 
 const PROJECT_ID = '69d9e24e0011cbc31ed4';
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = import.meta.env.VITE_GOOGLE_CLIENT_SECRET || '';
 const ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
 
 const DB_ID = 'default';
@@ -22,8 +23,8 @@ export const storage = new Storage(client);
 export const auth = {
     async signInWithGoogle() {
         const oauth = new OAuthProvider('google')
-            .setClientId(appwriteConfig.clientId)
-            .setSecret(appwriteConfig.clientSecret)
+            .setClientId(GOOGLE_CLIENT_ID)
+            .setSecret(GOOGLE_CLIENT_SECRET)
             .setScopes(['email', 'profile'])
             .redirectTo(ENDPOINT + '/auth');
         
