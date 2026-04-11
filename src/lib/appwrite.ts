@@ -22,8 +22,15 @@ export const storage = new Storage(client);
 
 export const auth = {
     async signInWithGoogle() {
-        // Appwrite OAuth - redirect to Appwrite auth page
         const url = new URL(ENDPOINT + '/auth/oauth2/google');
+        url.searchParams.set('clientId', GOOGLE_CLIENT_ID);
+        url.searchParams.set('redirect', ENDPOINT + '/auth');
+        url.searchParams.set('scopes', 'email profile');
+        window.location.href = url.toString();
+    },
+    
+    async signInWithApple() {
+        const url = new URL(ENDPOINT + '/auth/oauth2/apple');
         url.searchParams.set('clientId', GOOGLE_CLIENT_ID);
         url.searchParams.set('redirect', ENDPOINT + '/auth');
         url.searchParams.set('scopes', 'email profile');

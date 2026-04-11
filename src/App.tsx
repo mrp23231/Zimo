@@ -304,6 +304,11 @@ const translations = {
     loginTitle: 'ZIMO',
     loginSubtitle: 'A social space for clear thoughts and real connections.',
     continueGoogle: 'Continue with Google',
+    logout: 'Log out',
+    pushNotifications: 'Push notifications',
+    pushNotificationsHint: 'Browser desktop notifications',
+    deleteAccount: 'Delete account',
+    deleteAccountConfirm: 'Are you sure you want to delete your account? This cannot be undone.',
     welcome: 'Welcome to Zimo',
     onboardingSubtitle: 'Let’s finish your profile in a few quick steps.',
     next: 'Next',
@@ -504,6 +509,11 @@ const translations = {
     loginTitle: 'ZIMO',
     loginSubtitle: 'Соцсеть для ясных мыслей и настоящих связей.',
     continueGoogle: 'Войти через Google',
+    logout: 'Выйти',
+    pushNotifications: 'Push-уведомления',
+    pushNotificationsHint: 'Уведомления в браузере',
+    deleteAccount: 'Удалить аккаунт',
+    deleteAccountConfirm: 'Вы уверены, что хотите удалить аккаунт? Это действие необратимо.',
     welcome: 'Добро пожаловать в Zimo',
     onboardingSubtitle: 'Давайте оформим профиль за пару шагов.',
     next: 'Далее',
@@ -2591,7 +2601,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   key?: string
 }) {
   const { darkMode, setDarkMode, language, setLanguage, notificationsEnabled, setNotificationsEnabled, toastsEnabled, setToastsEnabled, t } = useSettings();
-  const { profile: currentProfile } = useAuth();
+  const { profile: currentProfile, logout } = useAuth();
   const { showToast } = useToast();
   const [targetProfile, setTargetProfile] = useState<UserProfile | null>(null);
   const [userPosts, setUserPosts] = useState<Post[]>([]);
@@ -2603,6 +2613,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [editBirthdate, setEditBirthdate] = useState('');
   const [editHideEmail, setEditHideEmail] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission === 'granted';
+    }
+    return false;
+  });
   const [stats, setStats] = useState({ followers: 0, following: 0 });
   const [isFollowing, setIsFollowing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -3269,6 +3285,34 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 </div>
                 <div className="flex items-center justify-between">
                   <div>
+                    <div className="font-bold text-sm">{t('pushNotifications')}</div>
+                    <div className="text-xs text-gray-400">{t('pushNotificationsHint')}</div>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (!pushEnabled) {
+                        if (typeof window !== 'undefined' && 'Notification' in window) {
+                          const perm = await Notification.requestPermission();
+                          setPushEnabled(perm === 'granted');
+                        } else {
+                          alert('Push notifications not supported in this browser');
+                        }
+                      } else {
+                        setPushEnabled(false);
+                      }
+                    }}
+                    className={cn(
+                      "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                      pushEnabled
+                        ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                        : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                    )}
+                  >
+                    {pushEnabled ? t('on') : t('off')}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
                     <div className="font-bold text-sm">{t('toastsToggle')}</div>
                     <div className="text-xs text-gray-400">{t('toastsHint')}</div>
                   </div>
@@ -3311,6 +3355,33 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   )}
                 >
                   English
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('appSettings')}</div>
+              <div className="space-y-3">
+                <button
+                  onClick={() => {
+                    if (window.confirm(t('logout') + '?')) {
+                      logout();
+                    }
+                  }}
+                  className="w-full bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white py-3 rounded-xl font-bold hover:opacity-90 transition-opacity"
+                >
+                  {t('logout')}
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm(t('deleteAccountConfirm'))) {
+                      // TODO: Delete account logic here
+                      alert('Delete account not implemented yet');
+                    }
+                  }}
+                  className="w-full bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 py-3 rounded-xl font-bold hover:opacity-90 transition-opacity"
+                >
+                  {t('deleteAccount')}
                 </button>
               </div>
             </div>
