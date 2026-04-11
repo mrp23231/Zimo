@@ -356,7 +356,6 @@ const translations = {
     proTip: 'Pro Tip',
     proTipText: 'Use hashtags to make your posts discoverable by everyone in the community!',
     bookmarksEmpty: 'No bookmarks yet. Save posts to see them here!',
-    back: 'Back',
     editBio: 'Edit Bio',
     noBio: 'No bio yet',
     follow: 'Follow',
