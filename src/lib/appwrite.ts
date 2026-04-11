@@ -4,7 +4,7 @@ import appwriteConfig from '../../appwrite-config.json';
 const PROJECT_ID = '69d9e24e0011cbc31ed4';
 const ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
 
-const DB_ID = 'zimo';
+const DB_ID = 'default';
 const USERS_COL = 'users';
 const POSTS_COL = 'posts';
 const MESSAGES_COL = 'messages';
