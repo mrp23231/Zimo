@@ -1,5 +1,5 @@
 import { Client, Account, Databases, Storage, OAuthProvider, ID, Query } from 'appwrite';
-import appwriteConfig from '../../appwrite-config.json';
+import appwriteConfig from '../../appwrite-config.json'; // eslint-disable-line
 
 const PROJECT_ID = '69d9e24e0011cbc31ed4';
 const ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
