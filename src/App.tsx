@@ -1702,22 +1702,30 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     if (!commentText.trim() || !profile) return;
 
     try {
-      await addDoc(collection(db, 'posts', post.id, 'comments'), {
+      const commentData: any = {
         authorUid: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
         text: commentText.trim(),
-        createdAt: serverTimestamp()
-      });
+        createdAt: serverTimestamp(),
+        likes: 0,
+        likedBy: []
+      };
+      // Add parentId if replying
+      if (replyTo) {
+        commentData.parentId = replyTo;
+      }
+      await addDoc(collection(db, 'posts', post.id, 'comments'), commentData);
       
       // Create notification
-      if (post.authorUid !== profile.uid) {
+      const notifyUid = replyTo ? comments.find(c => c.id === replyTo)?.authorUid : post.authorUid;
+      if (notifyUid && notifyUid !== profile.uid) {
         await addDoc(collection(db, 'notifications'), {
           type: 'comment',
           fromUid: profile.uid,
           fromName: profile.displayName,
           fromPhoto: profile.photoURL,
-          toUid: post.authorUid,
+          toUid: notifyUid,
           postId: post.id,
           createdAt: serverTimestamp(),
           read: false
@@ -1725,6 +1733,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       }
       
       setCommentText('');
+      setReplyTo(null);
     } catch (err) {
       console.error("Error commenting:", err);
     }
@@ -1761,6 +1770,10 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     } catch (err) {
       showToast(t('commentDeleteFailed'), "error");
     }
+  };
+  const [replyTo, setReplyTo] = useState<string | null>(null);
+  const handleReply = (commentId: string) => {
+    setReplyTo(commentId);
   };
 
   const handleCommentLike = async (commentId: string, currentLikes: number = 0, likedBy: string[] = []) => {
@@ -2085,7 +2098,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
             className="overflow-hidden"
           >
             <div className="mt-4 pt-4 border-t dark:border-zinc-800 space-y-4">
-              {comments.map(comment => (
+              {comments.filter(c => !c.parentId).map(comment => (
                 <div key={comment.id} className="flex gap-3 group/comment">
                   <img src={comment.authorPhoto} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="flex-1 relative">
@@ -2093,13 +2106,21 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
                       <div className="font-semibold text-xs mb-1">{comment.authorName}</div>
                       <p className="text-sm dark:text-gray-300">{comment.text}</p>
                     </div>
-                    <button 
-                      onClick={() => handleCommentLike(comment.id, comment.likes || 0, comment.likedBy || [])}
-                      className={`mt-1 flex items-center gap-1 text-xs ${(comment.likedBy || []).includes(profile?.uid || '') ? 'text-red-500' : 'text-gray-400 hover:text-red-500'}`}
-                    >
-                      <Heart size={12} fill={(comment.likedBy || []).includes(profile?.uid || '') ? 'currentColor' : 'none'} />
-                      <span>{comment.likes || 0}</span>
-                    </button>
+                    <div className="flex items-center gap-3 mt-1">
+                      <button 
+                        onClick={() => handleCommentLike(comment.id, comment.likes || 0, comment.likedBy || [])}
+                        className={`flex items-center gap-1 text-xs ${(comment.likedBy || []).includes(profile?.uid || '') ? 'text-red-500' : 'text-gray-400 hover:text-red-500'}`}
+                      >
+                        <Heart size={12} fill={(comment.likedBy || []).includes(profile?.uid || '') ? 'currentColor' : 'none'} />
+                        <span>{comment.likes || 0}</span>
+                      </button>
+                      <button 
+                        onClick={() => handleReply(comment.id)}
+                        className="text-xs text-gray-400 hover:text-blue-500"
+                      >
+                        {t('reply')}
+                      </button>
+                    </div>
                     {(profile?.uid === comment.authorUid || profile?.uid === post.authorUid) && (
                       <button 
                         onClick={() => handleDeleteComment(comment.id)}
