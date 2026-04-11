@@ -1559,7 +1559,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         </div>
         <div className="flex items-center gap-4">
           {profile?.photoURL && (
-            <img src={profile.photoURL} className="w-8 h-8 rounded-full object-cover cursor-pointer" referrerPolicy="no-referrer" onClick={() => setView('profile')} />
+            <img src={profile.photoURL} className="w-8 h-8 rounded-full object-cover cursor-pointer hidden md:block" referrerPolicy="no-referrer" onClick={() => setView('profile')} />
           )}
           <button onClick={() => setDarkMode(!darkMode)} className="p-2 text-gray-500 hover:text-black dark:hover:text-white transition-colors">
             {darkMode ? <Sun size={20} /> : <Moon size={20} />}
