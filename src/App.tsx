@@ -936,18 +936,8 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const lastProfileSync = useRef<{ photo?: string; name?: string; username?: string }>({});
 
-  useEffect(() => {
-    const testConnection = async () => {
-      try {
-        // Test connection by querying existing table
-        await supabase.from('users').select('*').limit(1);
-        console.log('✅ Database connection OK');
-      } catch (error) {
-        console.error('Connection test failed:', error);
-      }
-    };
-    testConnection();
-  }, []);
+  // Skip connection test - Supabase handles errors automatically
+  useEffect(() => {}, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
