@@ -3126,7 +3126,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 <div className="text-sm">{t('privateAccountHint')}</div>
               </div>
             )}
-            {userPosts.map(post => (
+            {userPosts.filter(p => isOwnProfile || !targetProfile?.isPrivate || isFollowing).map(post => (
               <PostCard 
                 key={post.id} 
                 post={post} 
@@ -3137,7 +3137,8 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 onShowLikes={onShowLikes}
               />
             ))}
-            {userPosts.length === 0 && (
+            {/* Only show no posts message if allowed to see */}
+            {(isOwnProfile || !targetProfile?.isPrivate || isFollowing) && userPosts.length === 0 && (
               <div className="text-center py-20 text-gray-400">{t('noPosts')}</div>
             )}
           </motion.div>
