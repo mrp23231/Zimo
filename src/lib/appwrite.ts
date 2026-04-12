@@ -91,7 +91,23 @@ class Collection {
     }
     
     where(field: string, op: string, value: any) {
-        return Query.where(field, op, value);
+        // Map Firebase-like operators to Appwrite Query methods
+        switch (op) {
+            case '==':
+                return Query.equal(field, value);
+            case '!=':
+                return Query.notEqual(field, value);
+            case '>':
+                return Query.greaterThan(field, value);
+            case '>=':
+                return Query.greaterThanEqual(field, value);
+            case '<':
+                return Query.lessThan(field, value);
+            case '<=':
+                return Query.lessThanEqual(field, value);
+            default:
+                return Query.equal(field, value);
+        }
     }
     
     orderBy(field: string, dir: string = 'asc') {
@@ -146,7 +162,31 @@ class QueryBuilder {
     private queries: any[] = [];
     
     where(field: string, op: string, value: any) {
-        this.queries.push(Query.where(field, op, value));
+        // Map Firebase-like operators to Appwrite Query methods
+        let query;
+        switch (op) {
+            case '==':
+                query = Query.equal(field, value);
+                break;
+            case '!=':
+                query = Query.notEqual(field, value);
+                break;
+            case '>':
+                query = Query.greaterThan(field, value);
+                break;
+            case '>=':
+                query = Query.greaterThanEqual(field, value);
+                break;
+            case '<':
+                query = Query.lessThan(field, value);
+                break;
+            case '<=':
+                query = Query.lessThanEqual(field, value);
+                break;
+            default:
+                query = Query.equal(field, value);
+        }
+        this.queries.push(query);
         return this;
     }
     

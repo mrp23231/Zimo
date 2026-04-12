@@ -11,6 +11,7 @@ import {
   signOut,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  updateProfile,
   User as FirebaseUser 
 } from 'firebase/auth';
 import { 
@@ -894,6 +895,8 @@ const AuthContext = createContext<{
   loading: boolean;
   needsOnboarding: boolean;
   signIn: () => Promise<void>;
+  signInWithEmail: (email: string, password: string) => Promise<void>;
+  signUpWithEmail: (email: string, password: string, displayName: string) => Promise<void>;
   logout: () => Promise<void>;
 } | null>(null);
 
@@ -1068,8 +1071,11 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signInWithEmail = async (email: string, password: string) => {
+    console.log('Attempting email sign in for:', email);
     try {
+      console.log('Calling signInWithEmailAndPassword with auth:', !!auth);
       await signInWithEmailAndPassword(auth, email, password);
+      console.log('Email sign in successful');
     } catch (error: any) {
       console.error("Sign in error:", error);
       alert("Ошибка входа: " + (error.message || "Неизвестная ошибка"));
@@ -1077,9 +1083,27 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signUpWithEmail = async (email: string, password: string, displayName: string) => {
+    console.log('Attempting email sign up for:', email);
     try {
+      console.log('Calling createUserWithEmailAndPassword with auth:', !!auth);
       const cred = await createUserWithEmailAndPassword(auth, email, password);
-      // Will be handled by onAuthStateChanged
+      console.log('User created successfully');
+      // Update profile with display name after user is created
+      if (cred.user && displayName) {
+        await updateProfile(cred.user, { displayName });
+        // Create user document in Firestore
+        const userDocRef = doc(db, 'users', cred.user.uid);
+        await setDoc(userDocRef, {
+          uid: cred.user.uid,
+          displayName: displayName,
+          email: email,
+          photoURL: '',
+          bio: '',
+          createdAt: serverTimestamp(),
+          isPrivate: false,
+          username: ''
+        });
+      }
     } catch (error: any) {
       console.error("Sign up error:", error);
       alert("Ошибка регистрации: " + (error.message || "Неизвестная ошибка"));
@@ -1089,7 +1113,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = () => signOut(auth);
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, needsOnboarding, signIn, logout }}>
+    <AuthContext.Provider value={{ user, profile, loading, needsOnboarding, signIn, logout, signInWithEmail, signUpWithEmail }}>
       {children}
     </AuthContext.Provider>
   );
