@@ -2320,6 +2320,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         .map(doc => doc.data() as UserProfile)
         .filter(u => u.isPrivate === true)
         .map(u => u.uid);
+      console.log('Private accounts:', privateUids);
       setPrivateAccountUids(privateUids);
     });
     return unsubscribe;
