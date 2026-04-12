@@ -2268,6 +2268,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   const [feedTab, setFeedTab] = useState<'global' | 'following'>('global');
   const [searchHashtag, setSearchHashtag] = useState<string | null>(null);
   const [followingUids, setFollowingUids] = useState<string[]>([]);
+  const [privateAccountUids, setPrivateAccountUids] = useState<string[]>([]);
   const { profile } = useAuth();
 
   useEffect(() => {
@@ -2295,6 +2296,19 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     return unsubscribe;
   }, [profile]);
 
+  // Load all users to get isPrivate status
+  useEffect(() => {
+    const q = query(collection(db, 'users'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const privateUids = snapshot.docs
+        .map(doc => doc.data() as UserProfile)
+        .filter(u => u.isPrivate === true)
+        .map(u => u.uid);
+      setPrivateAccountUids(privateUids);
+    });
+    return unsubscribe;
+  }, []);
+
   useEffect(() => {
     let q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100));
     
@@ -2306,12 +2320,16 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
       }
 
-      // For private accounts in 'all' tab, we need additional check - but simplified: if author is in followingUids, they approved
+      // Filter posts from private accounts - only show if you're the author or approved follower
       if (feedTab === 'all') {
-        // Filter out posts from private accounts unless you're following (approved) or it's your own post
-        // This is handled by the isPrivate check in users, but for simplicity we just check if followingUids contains author
-        // Public accounts show to everyone, private accounts only show to approved followers
-        // Since we can't easily check isPrivate here without fetching all authors, we rely on followingUids being only approved
+        allPosts = allPosts.filter(p => {
+          // Always show own posts
+          if (p.authorUid === profile?.uid) return true;
+          // Show if author is NOT private (public account)
+          if (!privateAccountUids.includes(p.authorUid)) return true;
+          // For private accounts, only show if you're an approved follower
+          return followingUids.includes(p.authorUid);
+        });
       }
 
       // Filter by following if tab is following - now only approved follows are in followingUids
@@ -2327,7 +2345,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       setPosts(allPosts.slice(0, 50));
     });
     return unsubscribe;
-  }, [feedTab, followingUids, profile?.blockedUsers, searchHashtag]);
+  }, [feedTab, followingUids, profile?.blockedUsers, searchHashtag, privateAccountUids]);
 
   const handlePost = async (e: React.FormEvent) => {
     e.preventDefault();
