@@ -309,6 +309,13 @@ const translations = {
     loginTitle: 'ZIMO',
     loginSubtitle: 'A social space for clear thoughts and real connections.',
     continueGoogle: 'Continue with Google',
+    continueEmail: 'Continue with email',
+    signIn: 'Sign in',
+    signUp: 'Sign up',
+    password: 'Password',
+    haveAccount: 'Already have account? Sign in',
+    noAccount: "Don't have account? Sign up",
+    backToGoogle: 'Back to Google',
     logout: 'Log out',
     pushNotifications: 'Push notifications',
     pushNotificationsHint: 'Browser desktop notifications',
@@ -528,6 +535,13 @@ const translations = {
     loginTitle: 'ZIMO',
     loginSubtitle: 'Соцсеть для ясных мыслей и настоящих связей.',
     continueGoogle: 'Войти через Google',
+    continueEmail: 'Войти по email',
+    signIn: 'Войти',
+    signUp: 'Регистрация',
+    password: 'Пароль',
+    haveAccount: 'Уже есть аккаунт? Войти',
+    noAccount: 'Нет аккаунта? Регистрация',
+    backToGoogle: 'Назад к Google',
     logout: 'Выйти',
     pushNotifications: 'Push-уведомления',
     pushNotificationsHint: 'Уведомления в браузере',
@@ -4434,8 +4448,23 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
 }
 
 function Login() {
-  const { signIn } = useAuth();
+  const { signIn, signInWithEmail, signUpWithEmail } = useAuth();
   const { t, language, setLanguage } = useSettings();
+  const [showEmailLogin, setShowEmailLogin] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [isRegister, setIsRegister] = useState(false);
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isRegister) {
+      await signUpWithEmail(email, password, displayName);
+    } else {
+      await signInWithEmail(email, password);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-gray-50 via-white to-gray-100 dark:from-black dark:via-zinc-950 dark:to-black p-4">
       <div className="max-w-md w-full">
@@ -4471,12 +4500,72 @@ function Login() {
           </div>
           <h1 className="text-4xl font-bold tracking-tighter mb-3">{t('loginTitle')}</h1>
           <p className="text-gray-500 mb-8">{t('loginSubtitle')}</p>
-          <button 
-            onClick={signIn}
-            className="w-full bg-black dark:bg-white text-white dark:text-black py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity flex items-center justify-center gap-3 shadow-xl"
-          >
-            {t('continueGoogle')}
-          </button>
+          
+          {showEmailLogin ? (
+            <form onSubmit={handleEmailAuth} className="space-y-4">
+              {isRegister && (
+                <input
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder={t('displayName')}
+                  className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-3 focus:outline-none focus:border-black dark:focus:border-white"
+                  required
+                />
+              )}
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Email"
+                className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-3 focus:outline-none focus:border-black dark:focus:border-white"
+                required
+              />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={t('password')}
+                className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-3 focus:outline-none focus:border-black dark:focus:border-white"
+                required
+              />
+              <button 
+                type="submit"
+                className="w-full bg-black dark:bg-white text-white dark:text-black py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity"
+              >
+                {isRegister ? t('signUp') : t('signIn')}
+              </button>
+              <button 
+                type="button"
+                onClick={() => setIsRegister(!isRegister)}
+                className="w-full text-center text-gray-500 py-2"
+              >
+                {isRegister ? t('haveAccount') : t('noAccount')}
+              </button>
+              <button 
+                type="button"
+                onClick={() => setShowEmailLogin(false)}
+                className="w-full text-center text-gray-400 text-sm py-2"
+              >
+                ← {t('backToGoogle')}
+              </button>
+            </form>
+          ) : (
+            <>
+              <button 
+                onClick={signIn}
+                className="w-full bg-black dark:bg-white text-white dark:text-black py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity flex items-center justify-center gap-3 shadow-xl mb-4"
+              >
+                {t('continueGoogle')}
+              </button>
+              <button 
+                onClick={() => setShowEmailLogin(true)}
+                className="w-full bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-gray-200 py-4 rounded-2xl font-bold hover:opacity-90 transition-opacity"
+              >
+                {t('continueEmail')}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
