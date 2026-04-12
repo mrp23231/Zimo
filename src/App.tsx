@@ -37,7 +37,7 @@ import {
   getDownloadURL,
   uploadBytesResumable
 } from 'firebase/storage';
-import { auth, db, storage } from './lib/firebase';
+import { auth, db, storage, supabase } from './lib/firebase';
 import { firestore, db as awDb } from './lib/appwrite';
 
 import { cn } from './lib/utils';
