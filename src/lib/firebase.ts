@@ -187,7 +187,26 @@ export const query = {
 
 // Dummy firebase initialization (not actually used)
 export const db = supabase;
-export const auth = { currentUser: null };
+
+export const auth = {
+    currentUser: null,
+    onAuthStateChanged: (callback: (user: any) => void) => {
+        // Call with null initially
+        callback(null);
+        // Return unsubscribe function
+        return () => {};
+    }
+};
+
+// Auth helper functions
+export const onAuthStateChanged = (authObj: any, callback: (user: any) => void) => callback(null);
+export const GoogleAuthProvider = class { constructor() {} };
+export const signInWithPopup = async (authObj: any, provider: any) => { throw new Error('Use Supabase auth instead'); };
+export const signOut = async (authObj: any) => {};
+export const createUserWithEmailAndPassword = async (authObj: any, email: string, pass: string) => ({ user: null });
+export const signInWithEmailAndPassword = async (authObj: any, email: string, pass: string) => ({ user: null });
+export const updateProfile = async (user: any, data: any) => {};
+
 export const storage = null;
 // Firebase-compatible query helpers
 export const where = (field: string, op: string, value: any) => [field, op, value];
