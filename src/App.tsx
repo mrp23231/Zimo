@@ -5352,13 +5352,10 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     
-    // Check periodically
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch('/__/health', { method: 'HEAD', mode: 'no-cors' });
-        if (!res.ok && navigator.onLine) setIsOffline(true);
-      } catch {
-        if (navigator.onLine) setIsOffline(true);
+    // Check periodically using navigator.onLine only
+    const interval = setInterval(() => {
+      if (!navigator.onLine) {
+        setIsOffline(true);
       }
     }, 5000);
     
