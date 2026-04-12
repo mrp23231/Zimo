@@ -2327,7 +2327,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   }, []);
 
   useEffect(() => {
-    let q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100));
+    let q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(20));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
       let allPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post));
@@ -3737,7 +3737,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     const q = query(
       collection(db, 'messages'),
       orderBy('createdAt', 'asc'),
-      limit(100)
+      limit(50)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
