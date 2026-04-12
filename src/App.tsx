@@ -1322,7 +1322,7 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
       setUsers(s.docs.map(d => d.data() as UserProfile).filter(u => u.uid !== profile.uid));
     });
 
-    const qFollows = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
+    const qFollows = query(collection(db, 'follows'), where('followerUid', '==', profile.uid), where('status', '==', 'approved'));
     const unsubFollows = onSnapshot(qFollows, (s) => {
       setFollowingUids(s.docs.map(d => (d.data() as Follow).followingUid));
     });
@@ -3480,7 +3480,7 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
     });
     
     if (profile) {
-      const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
+      const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid), where('status', '==', 'approved'));
       const unsubFollows = onSnapshot(q, (snapshot) => {
         setFollowingUids(snapshot.docs.map(doc => (doc.data() as Follow).followingUid));
       });
