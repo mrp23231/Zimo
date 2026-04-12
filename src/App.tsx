@@ -37,7 +37,7 @@ import {
   getDownloadURL,
   uploadBytesResumable
 } from 'firebase/storage';
-import { auth, db, storage, supabase } from './lib/firebase';
+import { auth, db, storage } from './lib/firebase';
 import { firestore, db as awDb } from './lib/appwrite';
 
 import { cn } from './lib/utils';
@@ -4304,6 +4304,16 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           <input
             value={text}
             onChange={(e) => handleTypingChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (text.trim()) {
+                  // Call handleSend with a mock event
+                  const mockEvent = { preventDefault: () => {} } as React.FormEvent;
+                  handleSend(mockEvent);
+                }
+              }
+            }}
             placeholder={t('typeMessage')}
             className="flex-1 bg-transparent border-none focus:outline-none text-sm px-2 placeholder:text-gray-400"
             disabled={uploading}
