@@ -393,9 +393,12 @@ const translations = {
     notificationsCleared: 'Notifications cleared',
     markAllReadSuccess: 'All marked as read',
     commentPlaceholder: 'Write a comment...',
-    commentsTitle: 'Comments ({count})',
+    replyPlaceholder: 'Write a reply...',
     reply: 'Reply',
+    delete: 'Delete',
+    confirmDeleteComment: 'Delete this comment?',
     replyingTo: 'Replying to',
+    commentsTitle: 'Comments ({count})',
     cancelReply: 'Cancel reply',
     reacted: 'Reacted',
     editMessage: 'Edit message',
@@ -609,8 +612,11 @@ const translations = {
     notificationsCleared: 'Уведомления очищены',
     markAllReadSuccess: 'Все отмечены прочитанными',
     commentPlaceholder: 'Написать комментарий...',
+    replyPlaceholder: 'Написать ответ...',
     commentsTitle: 'Комментарии ({count})',
     reply: 'Ответить',
+    delete: 'Удалить',
+    confirmDeleteComment: 'Удалить этот комментарий?',
     replyingTo: 'Ответ на',
     cancelReply: 'Отменить ответ',
     reacted: 'Реакция',
@@ -4834,6 +4840,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentText, setCommentText] = useState('');
   const [likedByUsers, setLikedByUsers] = useState<UserProfile[]>([]);
+  const [replyTo, setReplyTo] = useState<Comment | null>(null);
 
   useEffect(() => {
     const q = query(collection(db, 'posts', post.id, 'comments'), orderBy('createdAt', 'asc'));
@@ -4865,13 +4872,19 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
     if (!commentText.trim() || !profile) return;
 
     try {
-      await addDoc(collection(db, 'posts', post.id, 'comments'), {
+      const commentData: Record<string, unknown> = {
         authorUid: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
         text: commentText.trim(),
         createdAt: serverTimestamp()
-      });
+      };
+      
+      if (replyTo) {
+        commentData.parentId = replyTo.id;
+      }
+      
+      await addDoc(collection(db, 'posts', post.id, 'comments'), commentData);
       
       if (post.authorUid !== profile.uid) {
         await addDoc(collection(db, 'notifications'), {
@@ -4887,6 +4900,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
       }
       
       setCommentText('');
+      setReplyTo(null);
     } catch (err) {
       console.error("Error commenting:", err);
     }
@@ -4935,12 +4949,20 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
           {t('commentsTitle').replace('{count}', String(comments.length))}
         </h3>
         
+        {replyTo && (
+          <div className="flex items-center gap-2 mb-2 text-xs text-gray-500 bg-gray-50 dark:bg-zinc-800 p-2 rounded-full">
+            <span>{t('replyingTo')} </span>
+            <span className="font-bold">{replyTo.authorName}</span>
+            <button type="button" onClick={() => setReplyTo(null)} className="ml-1 text-gray-400 hover:text-gray-600">×</button>
+          </div>
+        )}
         <form onSubmit={handleComment} className="flex gap-2 mb-8">
           <input
+            id="comment-input"
             type="text"
             value={commentText}
             onChange={(e) => setCommentText(e.target.value)}
-            placeholder={t('commentPlaceholder')}
+            placeholder={replyTo ? t('replyPlaceholder') : t('commentPlaceholder')}
             className="flex-1 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-full px-4 py-2 text-sm focus:outline-none focus:border-black dark:focus:border-white transition-colors"
           />
           <button 
@@ -4959,10 +4981,40 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
               <div className="flex-1">
                 <div className="flex justify-between items-center mb-1">
                   <span className="font-bold text-xs">{comment.authorName}</span>
-                  <span className="text-[10px] text-gray-400">
-                    {comment.createdAt ? formatDistanceToNow(comment.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setReplyTo(comment);
+                        document.getElementById('comment-input')?.focus();
+                      }}
+                      className="text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    >
+                      {t('reply')}
+                    </button>
+                    {(comment.authorUid === profile?.uid || post.authorUid === profile?.uid) && (
+                      <button
+                        onClick={async () => {
+                          if (!window.confirm(t('confirmDeleteComment'))) return;
+                          await deleteDoc(doc(db, 'comments', comment.id));
+                          setComments(comments.filter(c => c.id !== comment.id));
+                        }}
+                        className="text-[10px] text-red-400 hover:text-red-600"
+                      >
+                        {t('delete')}
+                      </button>
+                    )}
+                    <span className="text-[10px] text-gray-400">
+                      {comment.createdAt ? formatDistanceToNow(comment.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
+                    </span>
+                  </div>
                 </div>
+                {replyTo?.id === comment.id && (
+                  <div className="text-xs text-gray-500 mb-2 flex items-center gap-1">
+                    <span>{t('replyingTo')} </span>
+                    <span className="font-bold">{comment.authorName}</span>
+                    <button onClick={() => setReplyTo(null)} className="ml-1 text-gray-400 hover:text-gray-600">×</button>
+                  </div>
+                )}
                 <p className="text-sm text-gray-700 dark:text-gray-300">{comment.text}</p>
               </div>
             </div>
