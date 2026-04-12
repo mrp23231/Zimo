@@ -2337,11 +2337,15 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
       }
 
-      // In 'all' tab: only show own posts + posts from people you follow (approved)
+      // In 'all' tab: show all posts from public accounts
       if (feedTab === 'all') {
         allPosts = allPosts.filter(p => {
+          // Always show own posts
           if (p.authorUid === profile?.uid) return true;
-          return followingUids.includes(p.authorUid);
+          // Hide if author is in private list (meaning isPrivate)
+          if (privateAccountUids.includes(p.authorUid)) return false;
+          // Show all other posts
+          return true;
         });
       }
 
