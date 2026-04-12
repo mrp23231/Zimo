@@ -1322,9 +1322,13 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
       setUsers(s.docs.map(d => d.data() as UserProfile).filter(u => u.uid !== profile.uid));
     });
 
-    const qFollows = query(collection(db, 'follows'), where('followerUid', '==', profile.uid), where('status', '==', 'approved'));
+    const qFollows = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
     const unsubFollows = onSnapshot(qFollows, (s) => {
-      setFollowingUids(s.docs.map(d => (d.data() as Follow).followingUid));
+      const approved = s.docs
+        .map(d => d.data() as Follow)
+        .filter(f => f.status === 'approved')
+        .map(f => f.followingUid);
+      setFollowingUids(approved);
     });
 
     return () => { unsubUsers(); unsubFollows(); };
@@ -2279,9 +2283,14 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid), where('status', '==', 'approved'));
+    const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setFollowingUids(snapshot.docs.map(doc => (doc.data() as Follow).followingUid));
+      // Only include approved follows
+      const approved = snapshot.docs
+        .map(doc => doc.data() as Follow)
+        .filter(f => f.status === 'approved')
+        .map(f => f.followingUid);
+      setFollowingUids(approved);
     });
     return unsubscribe;
   }, [profile]);
@@ -3480,9 +3489,13 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
     });
     
     if (profile) {
-      const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid), where('status', '==', 'approved'));
+      const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
       const unsubFollows = onSnapshot(q, (snapshot) => {
-        setFollowingUids(snapshot.docs.map(doc => (doc.data() as Follow).followingUid));
+        const approved = snapshot.docs
+          .map(doc => doc.data() as Follow)
+          .filter(f => f.status === 'approved')
+          .map(f => f.followingUid);
+        setFollowingUids(approved);
       });
 
       // Listen for unread messages
