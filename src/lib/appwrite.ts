@@ -1,6 +1,11 @@
 import { Client, Account, Databases, Storage, ID, Query } from 'appwrite';
 
+// Type fix for Appwrite v12
+type AppwriteDatabases = typeof Databases;
+type AppwriteClient = typeof Client;
+
 const PROJECT_ID = '69d9e24e0011cbc31ed4';
+const APPWRITE_KEY = 'standard_a5fe5c39bd8c6190242b05e934898296586a9e7c580fdb3d84aabe07f6b24127b9f6d98ef10f130f86fb5398f8be93c66b1fa037fa243bed68c84913cc6c1090c1cf6e40666b18b34217871002fbb3e3f4e6f7d8465b5800bea8343d729c2b7f395b7869a3e045c2a6b0d5f405363d52712a231413ed66c5efb3a5c53fdb1b6a';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = import.meta.env.VITE_GOOGLE_CLIENT_SECRET || '';
 const ENDPOINT = 'https://fra.cloud.appwrite.io/v1';

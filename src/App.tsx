@@ -30,7 +30,7 @@ import {
   arrayRemove,
   deleteDoc,
   getDocs
-} from 'firebase/firestore';
+} from './lib/firebase';
 import { 
   ref, 
   uploadBytes, 
@@ -69,7 +69,8 @@ import {
   Flag,
   Repeat,
   Edit3,
-  Smile
+  Smile,
+  WifiOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
@@ -4228,6 +4229,17 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                         top: '100%'
                       }}
                     >
+                    <div className="flex justify-around px-2 py-1 mb-1 border-b border-gray-100 dark:border-zinc-800">
+                      {MESSAGE_REACTIONS.map((r) => (
+                        <button
+                          key={r.key}
+                          onClick={(e) => { e.stopPropagation(); toggleReaction(m, r.key); }}
+                          className={`text-lg p-1 rounded-full hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all active:scale-75 ${(m.reactions?.[r.key] || []).includes(profile?.uid || '') ? 'bg-red-50 dark:bg-red-900/20' : ''}`}
+                        >
+                          {r.emoji}
+                        </button>
+                      ))}
+                    </div>
                     <button
                       onClick={() => { setReplyTo(m); setSelectedMessageId(null); }}
                       className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-zinc-800 flex items-center gap-2"
@@ -5331,10 +5343,50 @@ function ErrorFallback({ error, resetErrorBoundary }: { error: any, resetErrorBo
 // Actually, let's try one more time with a very standard class definition.
 
 export default function App() {
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    // Check periodically
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/__/health', { method: 'HEAD', mode: 'no-cors' });
+        if (!res.ok && navigator.onLine) setIsOffline(true);
+      } catch {
+        if (navigator.onLine) setIsOffline(true);
+      }
+    }, 5000);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      clearInterval(interval);
+    };
+  }, []);
+
   return (
     <SettingsProvider>
       <AuthProvider>
         <ToastProvider>
+          {/* Connection indicator - slides out when offline */}
+          <AnimatePresence>
+            {isOffline && (
+              <motion.div
+                initial={{ y: -60, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: -60, opacity: 0 }}
+                className="fixed top-0 left-0 right-0 z-[100] bg-orange-500 text-white py-2 px-4 flex items-center justify-center gap-2 shadow-lg"
+              >
+                <WifiOff size={16} className="animate-pulse" />
+                <span className="text-sm font-medium">Нет подключения. Попытка переподключения...</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
           <SocialApp />
         </ToastProvider>
       </AuthProvider>
