@@ -242,7 +242,7 @@ interface Post {
 
 interface Notification {
   id: string;
-  type: 'like' | 'comment' | 'follow' | 'repost';
+  type: 'like' | 'comment' | 'follow' | 'repost' | 'follow_request';
   fromUid: string;
   fromName: string;
   fromPhoto: string;
@@ -5090,8 +5090,47 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
       case 'like': return t('likeMessage');
       case 'comment': return t('commentMessage');
       case 'follow': return t('followMessage');
+      case 'follow_request': return t('followRequestMessage');
       case 'repost': return t('repostMessage');
       default: return t('interactedMessage');
+    }
+  };
+
+  const handleApproveRequest = async (n: Notification) => {
+    if (!profile) return;
+    try {
+      const followId = n.fromUid + '_' + profile.uid;
+      await setDoc(doc(db, 'follows', followId), {
+        followerUid: n.fromUid,
+        followingUid: profile.uid,
+        status: 'approved',
+        createdAt: serverTimestamp()
+      });
+      await addDoc(collection(db, 'notifications'), {
+        type: 'follow',
+        fromUid: profile.uid,
+        fromName: profile.displayName,
+        fromPhoto: profile.photoURL,
+        toUid: n.fromUid,
+        createdAt: serverTimestamp(),
+        read: false
+      });
+      await updateDoc(doc(db, 'notifications', n.id), { read: true });
+      showToast(t('followApproved'), 'success');
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const handleRejectRequest = async (n: Notification) => {
+    if (!profile) return;
+    try {
+      const followId = n.fromUid + '_' + profile.uid;
+      await deleteDoc(doc(db, 'follows', followId));
+      await updateDoc(doc(db, 'notifications', n.id), { read: true });
+      showToast(t('followRejected'), 'info');
+    } catch (err) {
+      showToast(t('genericError'), 'error');
     }
   };
 
@@ -5138,6 +5177,23 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
               <p className="text-[10px] text-gray-400 mt-1">
                 {n.createdAt ? formatDistanceToNow(n.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
               </p>
+              {/* Show approve/reject buttons for follow requests */}
+              {n.type === 'follow_request' && (
+                <div className="flex gap-2 mt-2" onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={() => handleApproveRequest(n)}
+                    className="text-xs bg-blue-500 text-white px-3 py-1 rounded-full hover:bg-blue-600"
+                  >
+                    {t('approve')}
+                  </button>
+                  <button
+                    onClick={() => handleRejectRequest(n)}
+                    className="text-xs bg-gray-200 dark:bg-zinc-700 px-3 py-1 rounded-full hover:bg-gray-300 dark:hover:bg-zinc-600"
+                  >
+                    {t('reject')}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}
