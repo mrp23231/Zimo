@@ -8,7 +8,9 @@ import {
   signInWithPopup, 
   GoogleAuthProvider, 
   onAuthStateChanged, 
-  signOut, 
+  signOut,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   User as FirebaseUser 
 } from 'firebase/auth';
 import { 
@@ -1048,6 +1050,25 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error: any) {
       console.error("Sign in error:", error);
       alert("Ошибка входа: " + (error.message || "Неизвестная ошибка"));
+    }
+  };
+
+  const signInWithEmail = async (email: string, password: string) => {
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (error: any) {
+      console.error("Sign in error:", error);
+      alert("Ошибка входа: " + (error.message || "Неизвестная ошибка"));
+    }
+  };
+
+  const signUpWithEmail = async (email: string, password: string, displayName: string) => {
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      // Will be handled by onAuthStateChanged
+    } catch (error: any) {
+      console.error("Sign up error:", error);
+      alert("Ошибка регистрации: " + (error.message || "Неизвестная ошибка"));
     }
   };
 
