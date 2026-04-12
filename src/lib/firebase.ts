@@ -1,8 +1,19 @@
+// Firebase SDK loaded but we use localStorage mode only (Firebase quota exceeded)
+// This file provides Firebase-compatible API using localStorage
 import { initializeApp } from 'firebase/app';
 import { getAuth, User } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage, uploadBytesResumable } from 'firebase/storage';
-import firebaseConfig from '../../firebase-applet-config.json';
+// Dummy config - we won't actually connect to Firebase
+const firebaseConfig = {
+  apiKey: 'dummy',
+  authDomain: 'local',
+  projectId: 'local',
+  storageBucket: 'local',
+  messagingSenderId: '000000000000',
+  appId: 'local:000000000000',
+  firestoreDatabaseId: '(default)'
+};
 
 // Generate local user ID without Firebase auth (works from any IP)
 const generateLocalUserId = () => {
