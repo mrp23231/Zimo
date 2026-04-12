@@ -1109,6 +1109,20 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   const [userSearch, setUserSearch] = useState('');
   const [userResults, setUserResults] = useState<UserProfile[]>([]);
   const [isUserSearching, setIsUserSearching] = useState(false);
+  const [privateAccountUids, setPrivateAccountUids] = useState<string[]>([]);
+
+  // Load private account UIDs
+  useEffect(() => {
+    const q = query(collection(db, 'users'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const privateUids = snapshot.docs
+        .map(doc => doc.data() as UserProfile)
+        .filter(u => u.isPrivate === true)
+        .map(u => u.uid);
+      setPrivateAccountUids(privateUids);
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     const q = query(collection(db, 'posts'), orderBy('likes', 'desc'), limit(20));
@@ -1117,11 +1131,13 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
       if (profile?.blockedUsers && profile.blockedUsers.length > 0) {
         allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
       }
+      // Filter out private account posts
+      allPosts = allPosts.filter(p => !privateAccountUids.includes(p.authorUid));
       setTrendingPosts(allPosts.slice(0, 10));
       setLoading(false);
     });
     return unsubscribe;
-  }, [profile?.blockedUsers]);
+  }, [profile?.blockedUsers, privateAccountUids]);
 
   useEffect(() => {
     if (userSearch.length < 2) {
@@ -2320,15 +2336,15 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
       }
 
-      // Filter posts from private accounts - only show if you're the author or approved follower
+      // Hide posts from private accounts in 'all' tab completely
       if (feedTab === 'all') {
         allPosts = allPosts.filter(p => {
           // Always show own posts
           if (p.authorUid === profile?.uid) return true;
-          // Show if author is NOT private (public account)
-          if (!privateAccountUids.includes(p.authorUid)) return true;
-          // For private accounts, only show if you're an approved follower
-          return followingUids.includes(p.authorUid);
+          // Hide if author is private
+          if (privateAccountUids.includes(p.authorUid)) return false;
+          // Show for public accounts
+          return true;
         });
       }
 
