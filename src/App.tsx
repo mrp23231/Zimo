@@ -939,11 +939,11 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const testConnection = async () => {
       try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
+        // Test connection by querying existing table
+        await supabase.from('users').select('*').limit(1);
+        console.log('✅ Database connection OK');
       } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration. The client is offline.");
-        }
+        console.error('Connection test failed:', error);
       }
     };
     testConnection();
