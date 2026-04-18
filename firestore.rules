@@ -80,9 +80,17 @@ service cloud.firestore {
     }
 
     function isValidPost(data) {
+      // Allow posts with either non-empty text OR media (imageUrls/imageUrl).
+      // This matches the app UX where a user can publish "photo-only" posts.
+      function hasMedia(d) {
+        return (('imageUrls' in d) && (d.imageUrls is list) && d.imageUrls.size() > 0) ||
+               (('imageUrl' in d) && (d.imageUrl is string) && d.imageUrl.size() > 0);
+      }
+
       return data.keys().hasAll(['authorUid', 'authorName', 'content', 'createdAt', 'likes', 'likedBy']) &&
              data.authorUid == request.auth.uid &&
-             data.content is string && data.content.size() > 0 && data.content.size() <= 1000 &&
+             data.content is string && data.content.size() <= 1000 &&
+             (data.content.size() > 0 || hasMedia(data)) &&
              data.likes is number &&
              data.likedBy is list &&
              (!('imageUrls' in data) || data.imageUrls is list) &&
