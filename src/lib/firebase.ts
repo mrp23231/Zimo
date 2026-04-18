@@ -5,7 +5,7 @@ import { getStorage, uploadBytesResumable } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseConfig);
 const dbId = firebaseConfig.firestoreDatabaseId === '(default)' ? undefined : firebaseConfig.firestoreDatabaseId;
 export const db = getFirestore(app, dbId);
 export const auth = getAuth(app);

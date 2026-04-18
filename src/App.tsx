@@ -40,8 +40,9 @@ import {
   getDownloadURL,
   uploadBytesResumable
 } from 'firebase/storage';
-import { auth, db, storage } from './lib/firebase';
+import { app, auth, db, storage } from './lib/firebase';
 import { firestore, db as awDb } from './lib/appwrite';
+import { enableWebPush, disableWebPush, attachForegroundPushListener } from './lib/push';
 
 import { cn } from './lib/utils';
 import { 
@@ -56,6 +57,8 @@ import {
   Send,
   ArrowLeft,
   Bell,
+  BellRing,
+  BellOff,
   Image as ImageIcon,
   X,
   Search,
@@ -74,7 +77,10 @@ import {
   Edit3,
   Smile,
   WifiOff,
-  Pin
+  Pin,
+  Copy,
+  Mic,
+  Square
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
@@ -320,6 +326,14 @@ interface UserProfile {
   blockedUsers?: string[];
   isPrivate?: boolean;
   pinnedPostIds?: string[];
+  pushEnabled?: boolean;
+  pushToken?: string;
+  pushPrefs?: {
+    likes?: boolean;
+    comments?: boolean;
+    follows?: boolean;
+    messages?: boolean;
+  };
 }
 
 interface Follow {
@@ -327,6 +341,7 @@ interface Follow {
   followerUid: string;
   followingUid: string;
   status?: 'pending' | 'approved' | 'rejected';
+  postNotifications?: boolean;
   createdAt: Timestamp;
 }
 
@@ -352,7 +367,7 @@ interface CommentNode extends Comment {
 
 interface Notification {
   id: string;
-  type: 'like' | 'comment' | 'follow' | 'repost' | 'follow_request';
+  type: 'like' | 'comment' | 'follow' | 'repost' | 'follow_request' | 'new_post';
   fromUid: string;
   fromName: string;
   fromPhoto: string;
@@ -380,6 +395,8 @@ interface Message {
   receiverUid: string;
   text: string;
   imageUrl?: string;
+  audioUrl?: string;
+  audioDurationMs?: number;
   replyToId?: string;
   replyToText?: string;
   replyToSenderName?: string;
@@ -430,6 +447,15 @@ const translations = {
     logout: 'Log out',
     pushNotifications: 'Push notifications',
     pushNotificationsHint: 'Browser desktop notifications',
+    pushLikes: 'Likes',
+    pushComments: 'Comments',
+    pushFollows: 'Follows',
+    pushMessages: 'Messages',
+    pushDenied: 'Notifications permission denied',
+    postAlerts: 'Post alerts',
+    postAlertsOn: 'On',
+    postAlertsOff: 'Off',
+    postAlertsHint: 'Notify me when this author posts',
     privateAccount: 'Private account',
     privateAccountHint: 'Only approved followers can see your posts',
     followRequested: 'Follow requested',
@@ -524,6 +550,8 @@ const translations = {
     cancelReply: 'Cancel reply',
     reacted: 'Reacted',
     editMessage: 'Edit message',
+    copy: 'Copy',
+    copied: 'Copied',
     deleteMessage: 'Delete message',
     deleteForMe: 'Delete for me',
     deleteForAll: 'Delete for everyone',
@@ -533,9 +561,15 @@ const translations = {
     pinMessage: 'Pin message',
     unpinMessage: 'Unpin message',
     pinnedMessages: 'Pinned messages',
+    voiceMessage: 'Voice message',
+    startRecording: 'Start recording',
+    stopRecording: 'Stop recording',
+    recording: 'Recording...',
+    microphoneDenied: 'Microphone access denied',
     typing: 'typing...',
     edited: 'edited',
     shareCopied: 'Link copied to clipboard!',
+    loadMore: 'Load more',
     bookmarkAdded: 'Added to bookmarks',
     bookmarkRemoved: 'Removed from bookmarks',
     bookmarkFailed: 'Failed to bookmark',
@@ -579,6 +613,7 @@ const translations = {
     typeMessage: 'Type a message...',
     startConversation: 'Start a conversation with',
     recentChats: 'Recent chats',
+    newMessages: '{count} new',
     sent: 'Sent',
     read: 'Read',
     communityStats: 'Community Stats',
@@ -589,6 +624,7 @@ const translations = {
     commentMessage: 'commented on your post',
     followMessage: 'started following you',
     followRequestMessage: 'wants to follow you',
+    newPostMessage: 'published a new post',
     followApproved: 'Follow request approved',
     followRejected: 'Follow request rejected',
     requested: 'Requested',
@@ -669,6 +705,15 @@ const translations = {
     logout: 'Выйти',
     pushNotifications: 'Push-уведомления',
     pushNotificationsHint: 'Уведомления в браузере',
+    pushLikes: 'Лайки',
+    pushComments: 'Комментарии',
+    pushFollows: 'Подписки',
+    pushMessages: 'Сообщения',
+    pushDenied: 'Нет разрешения на уведомления',
+    postAlerts: 'Уведомления о постах',
+    postAlertsOn: 'Вкл',
+    postAlertsOff: 'Выкл',
+    postAlertsHint: 'Уведомлять, когда автор публикует новый пост',
     privateAccount: 'Закрытый аккаунт',
     privateAccountHint: 'Только одобренные подписчики видят посты',
     followRequested: 'Запрос на подписку',
@@ -763,6 +808,8 @@ const translations = {
     cancelReply: 'Отменить ответ',
     reacted: 'Реакция',
     editMessage: 'Редактировать',
+    copy: 'Копировать',
+    copied: 'Скопировано',
     deleteMessage: 'Удалить',
     deleteForMe: 'Удалить у меня',
     deleteForAll: 'Удалить у всех',
@@ -772,9 +819,15 @@ const translations = {
     pinMessage: 'Закрепить',
     unpinMessage: 'Открепить',
     pinnedMessages: 'Закреплённые',
+    voiceMessage: 'Голосовое',
+    startRecording: 'Начать запись',
+    stopRecording: 'Остановить запись',
+    recording: 'Запись...',
+    microphoneDenied: 'Нет доступа к микрофону',
     typing: 'печатает...',
     edited: 'изменено',
     shareCopied: 'Ссылка скопирована!',
+    loadMore: 'Загрузить ещё',
     bookmarkAdded: 'Добавлено в закладки',
     bookmarkRemoved: 'Удалено из закладок',
     bookmarkFailed: 'Не удалось добавить в закладки',
@@ -818,6 +871,7 @@ const translations = {
     typeMessage: 'Написать сообщение...',
     startConversation: 'Начните диалог с',
     recentChats: 'Недавние чаты',
+    newMessages: '{count} новых',
     sent: 'Отправлено',
     read: 'Прочитано',
     communityStats: 'Статистика сообщества',
@@ -828,6 +882,7 @@ const translations = {
     commentMessage: 'оставил комментарий',
     followMessage: 'подписался на вас',
     followRequestMessage: 'хочет подписаться',
+    newPostMessage: 'опубликовал(а) новый пост',
     followApproved: 'Подписка одобрена',
     followRejected: 'Подписка отклонена',
     requested: 'Запрошено',
@@ -877,7 +932,9 @@ const translations = {
 
 type TranslationKey = keyof typeof translations.en;
 
-const STORAGE_ENABLED = false;
+// Storage is strongly recommended (media as data URLs bloats Firestore and quickly hits limits).
+// Set `VITE_STORAGE_ENABLED=false` to force legacy behavior.
+const STORAGE_ENABLED = import.meta.env.VITE_STORAGE_ENABLED !== 'false';
 const MAX_IMAGE_BYTES = 700 * 1024;
 const MAX_IMAGE_DIM = 1280;
 
@@ -913,6 +970,39 @@ const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: num
       img.src = reader.result as string;
     };
     reader.readAsDataURL(file);
+  });
+};
+
+const dataUrlToBlob = async (dataUrl: string) => {
+  const res = await fetch(dataUrl);
+  return await res.blob();
+};
+
+const uploadBlobToStorage = async (
+  path: string,
+  blob: Blob,
+  onProgress?: (pct: number) => void
+) => {
+  const storageRef = ref(storage, path);
+  const uploadTask = uploadBytesResumable(storageRef, blob);
+
+  return await new Promise<string>((resolve, reject) => {
+    uploadTask.on(
+      'state_changed',
+      (snapshot) => {
+        const pct = snapshot.totalBytes ? (snapshot.bytesTransferred / snapshot.totalBytes) * 100 : 0;
+        onProgress?.(pct);
+      },
+      (error) => reject(error),
+      async () => {
+        try {
+          const url = await getDownloadURL(uploadTask.snapshot.ref);
+          resolve(url);
+        } catch (err) {
+          reject(err);
+        }
+      }
+    );
   });
 };
 
@@ -1765,6 +1855,7 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
       followerUid: profile.uid,
       followingUid: targetUid,
       status,
+      postNotifications: false,
       createdAt: serverTimestamp()
     });
     
@@ -2071,6 +2162,8 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   const { t } = useSettings();
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
+  const [commentsLimit, setCommentsLimit] = useState(40);
+  const [hasMoreComments, setHasMoreComments] = useState(true);
   const [commentText, setCommentText] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(post.content);
@@ -2079,20 +2172,35 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   const [repostText, setRepostText] = useState('');
   const [isReposting, setIsReposting] = useState(false);
   const [replyTo, setReplyTo] = useState<Comment | null>(null);
+  const carouselRef = useRef<HTMLDivElement | null>(null);
+  const [carouselIndex, setCarouselIndex] = useState(0);
   const isLiked = post.likedBy?.includes(profile?.uid || '');
   const isBookmarked = profile?.bookmarks?.includes(post.id);
   const commentTree = buildCommentTree(comments);
   const commentDescendantCountById = useMemo(() => buildCommentDescendantCountMap(commentTree), [commentTree]);
   const [collapsedCommentBranches, setCollapsedCommentBranches] = useState<Record<string, boolean>>({});
 
+  const handleCarouselScroll = () => {
+    const el = carouselRef.current;
+    if (!el) return;
+    const w = el.clientWidth || 1;
+    const idx = Math.round(el.scrollLeft / w);
+    setCarouselIndex(Math.max(0, Math.min(idx, (post.imageUrls?.length || 1) - 1)));
+  };
+
   useEffect(() => {
     if (!showComments) return;
-    const q = query(collection(db, 'posts', post.id, 'comments'), orderBy('createdAt', 'asc'));
+    const q = query(
+      collection(db, 'posts', post.id, 'comments'),
+      orderBy('createdAt', 'asc'),
+      limit(commentsLimit)
+    );
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      setHasMoreComments(snapshot.size >= commentsLimit);
       setComments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment)));
     });
     return unsubscribe;
-  }, [showComments, post.id]);
+  }, [showComments, post.id, commentsLimit]);
 
   useEffect(() => {
     if (!showComments) return;
@@ -2519,28 +2627,69 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       )}
       
       {post.imageUrls && post.imageUrls.length > 0 && (
-        <div className={cn(
-          "mb-4 grid gap-2 rounded-2xl overflow-hidden",
-          post.imageUrls.length === 1 ? "grid-cols-1" : "grid-cols-2"
-        )}>
-          {post.imageUrls.map((url, idx) => (
-            <div 
-              key={idx} 
-              className="aspect-square bg-gray-50 dark:bg-zinc-800 border dark:border-zinc-800 cursor-zoom-in overflow-hidden"
-              onClick={(e) => { e.stopPropagation(); onOpenImage?.(url); }}
+        <div className="mb-4">
+          {post.imageUrls.length === 1 ? (
+            <div
+              className="rounded-2xl overflow-hidden border dark:border-zinc-800 bg-gray-50 dark:bg-zinc-800 cursor-zoom-in"
+              onClick={(e) => { e.stopPropagation(); onOpenImage?.(post.imageUrls![0]); }}
             >
-              <img 
-                src={url} 
-                className="w-full h-full object-cover hover:scale-105 transition-transform duration-500" 
-                referrerPolicy="no-referrer" 
-                alt={`Post image ${idx + 1}`}
+              <img
+                src={post.imageUrls[0]}
+                className="w-full h-auto max-h-[520px] object-cover hover:scale-105 transition-transform duration-500"
+                referrerPolicy="no-referrer"
+                alt="Post image"
               />
             </div>
-          ))}
+          ) : (
+            <div className="rounded-2xl overflow-hidden border dark:border-zinc-800 bg-black/5 dark:bg-white/5">
+              <div
+                ref={carouselRef}
+                onScroll={handleCarouselScroll}
+                className="flex overflow-x-auto snap-x snap-mandatory scroll-smooth"
+                style={{ WebkitOverflowScrolling: 'touch' }}
+              >
+                {post.imageUrls.map((url, idx) => (
+                  <div key={idx} className="snap-center shrink-0 w-full aspect-square bg-gray-50 dark:bg-zinc-800">
+                    <button
+                      type="button"
+                      className="w-full h-full cursor-zoom-in"
+                      onClick={(e) => { e.stopPropagation(); onOpenImage?.(url); }}
+                    >
+                      <img
+                        src={url}
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                        alt={`Post image ${idx + 1}`}
+                      />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center justify-center gap-1.5 py-2 bg-white/80 dark:bg-black/40 backdrop-blur">
+                {post.imageUrls.map((_, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const el = carouselRef.current;
+                      if (!el) return;
+                      el.scrollTo({ left: idx * el.clientWidth, behavior: 'smooth' });
+                    }}
+                    className={cn(
+                      "w-1.5 h-1.5 rounded-full transition-all",
+                      idx === carouselIndex ? "bg-blue-500 w-4" : "bg-gray-300 dark:bg-zinc-700 hover:bg-gray-400 dark:hover:bg-zinc-600"
+                    )}
+                    aria-label={`Go to image ${idx + 1}`}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {post.imageUrl && !post.imageUrls && (
+      {post.imageUrl && (!post.imageUrls || post.imageUrls.length === 0) && (
         <div 
           className="mb-4 rounded-2xl overflow-hidden border dark:border-zinc-800 bg-gray-50 dark:bg-zinc-800 cursor-zoom-in"
           onClick={(e) => { e.stopPropagation(); onOpenImage?.(post.imageUrl!); }}
@@ -2614,6 +2763,17 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
             className="overflow-hidden"
           >
             <div className="mt-4 pt-4 border-t dark:border-zinc-800 space-y-4">
+              {hasMoreComments && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setCommentsLimit(prev => prev + 40)}
+                    className="text-xs font-bold text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-zinc-800 px-3 py-1.5 rounded-full transition-colors"
+                  >
+                    {t('loadMore')}
+                  </button>
+                </div>
+              )}
               {commentTree.length > 0 ? (
                 <CommentThread
                   nodes={commentTree}
@@ -2720,6 +2880,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 }) {
   const { t } = useSettings();
   const [posts, setPosts] = useState<Post[]>([]);
+  const [postsLimit, setPostsLimit] = useState(20);
+  const [hasMorePosts, setHasMorePosts] = useState(true);
   const [content, setContent] = useState('');
   const [imageUrls, setImageUrls] = useState<string[]>([]);
   const [imageUrlInput, setImageUrlInput] = useState('');
@@ -2779,9 +2941,10 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   }, []);
 
   useEffect(() => {
-    let q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(20));
+    let q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(postsLimit));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      setHasMorePosts(snapshot.size >= postsLimit);
       let allPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post));
       
       // Filter blocked users
@@ -2794,8 +2957,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         allPosts = allPosts.filter(p => {
           // Always show own posts
           if (p.authorUid === profile?.uid) return true;
-          // Hide if author is in private list (meaning isPrivate)
-          if (privateAccountUids.includes(p.authorUid)) return false;
+          // Hide private accounts unless we follow them (approved)
+          if (privateAccountUids.includes(p.authorUid) && !followingUids.includes(p.authorUid)) return false;
           // Show all other posts
           return true;
         });
@@ -2811,17 +2974,17 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         allPosts = allPosts.filter(p => p.content.toLowerCase().includes(searchHashtag.toLowerCase()));
       }
 
-      setPosts(allPosts.slice(0, 50));
+      setPosts(allPosts);
     });
     return unsubscribe;
-  }, [feedTab, followingUids, profile?.blockedUsers, searchHashtag, privateAccountUids]);
+  }, [feedTab, followingUids, profile?.blockedUsers, searchHashtag, privateAccountUids, postsLimit]);
 
   const handlePost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!content.trim() || !profile || uploading) return;
 
     try {
-      await addDoc(collection(db, 'posts'), {
+      const postRef = await addDoc(collection(db, 'posts'), {
         authorUid: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
@@ -2832,6 +2995,35 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         likes: 0,
         likedBy: []
       });
+
+      // Fan-out "new post" notifications to followers who enabled post alerts.
+      // This is MVP (client-side) and may not scale; later we should move it to a server/Cloud Function.
+      try {
+        const qFollowers = query(
+          collection(db, 'follows'),
+          where('followingUid', '==', profile.uid),
+          where('status', '==', 'approved'),
+          where('postNotifications', '==', true),
+          limit(200)
+        );
+        const snap = await getDocs(qFollowers);
+        await Promise.all(
+          snap.docs.map(d => {
+            const f = d.data() as Follow & { postNotifications?: boolean };
+            return addDoc(collection(db, 'notifications'), {
+              type: 'new_post',
+              fromUid: profile.uid,
+              fromName: profile.displayName,
+              fromPhoto: profile.photoURL,
+              toUid: f.followerUid,
+              postId: postRef.id,
+              createdAt: serverTimestamp(),
+              read: false
+            });
+          })
+        );
+      } catch {}
+
       setContent('');
       setImageUrls([]);
     } catch (err) {
@@ -2856,8 +3048,19 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           setError(t('imageTooLarge'));
           continue;
         }
-        newUrls.push(dataUrl);
-        setUploadProgress(Math.round(((i + 1) / files.length) * 100));
+        if (!STORAGE_ENABLED) {
+          newUrls.push(dataUrl);
+          setUploadProgress(Math.round(((i + 1) / files.length) * 100));
+          continue;
+        }
+
+        const blob = await dataUrlToBlob(dataUrl);
+        const filename = `posts/${profile.uid}/${Date.now()}_${i}.jpg`;
+        const url = await uploadBlobToStorage(filename, blob, (pct) => {
+          const overall = ((i + pct / 100) / files.length) * 100;
+          setUploadProgress(overall);
+        });
+        newUrls.push(url);
       }
       setImageUrls(prev => [...prev, ...newUrls]);
     } catch (err) {
@@ -3079,6 +3282,17 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             ))}
           </AnimatePresence>
         </div>
+        {hasMorePosts && (
+          <div className="mt-8 flex justify-center">
+            <button
+              type="button"
+              onClick={() => setPostsLimit(prev => prev + 20)}
+              className="px-5 py-2 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+            >
+              {t('loadMore')}
+            </button>
+          </div>
+        )}
       </div>
 
       <aside className="hidden lg:block w-64 space-y-6">
@@ -3139,15 +3353,17 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [editHideEmail, setEditHideEmail] = useState(false);
   const [editIsPrivate, setEditIsPrivate] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [pushEnabled, setPushEnabled] = useState(() => {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      return Notification.permission === 'granted';
-    }
-    return false;
-  });
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushPrefs, setPushPrefs] = useState(() => ({
+    likes: true,
+    comments: true,
+    follows: true,
+    messages: true,
+  }));
   const [stats, setStats] = useState({ followers: 0, following: 0 });
   const [isFollowing, setIsFollowing] = useState(false);
   const [followRequested, setFollowRequested] = useState(false);
+  const [postAlertsEnabled, setPostAlertsEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarProgress, setAvatarProgress] = useState(0);
@@ -3229,10 +3445,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         if (!doc.exists()) {
           setIsFollowing(false);
           setFollowRequested(false);
+          setPostAlertsEnabled(false);
         } else {
           const data = doc.data() as Follow;
           setIsFollowing(data?.status === 'approved');
           setFollowRequested(data?.status === 'pending');
+          setPostAlertsEnabled(!!data?.postNotifications);
         }
       });
       return () => {
@@ -3258,6 +3476,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     setEditBirthdate(targetProfile.birthdate || '');
     setEditHideEmail(!!targetProfile.hideEmail);
     setEditIsPrivate(!!targetProfile.isPrivate);
+    setPushEnabled(!!targetProfile.pushEnabled);
+    setPushPrefs({
+      likes: targetProfile.pushPrefs?.likes ?? true,
+      comments: targetProfile.pushPrefs?.comments ?? true,
+      follows: targetProfile.pushPrefs?.follows ?? true,
+      messages: targetProfile.pushPrefs?.messages ?? true,
+    });
   }, [isOwnProfile, targetProfile?.uid]);
 
   const handleUpdateBio = async () => {
@@ -3293,10 +3518,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         setError(t('imageTooLarge'));
         return;
       }
+      const avatarValue = STORAGE_ENABLED
+        ? await uploadBlobToStorage(`profiles/${currentProfile.uid}/avatar.jpg`, await dataUrlToBlob(dataUrl), setAvatarProgress)
+        : dataUrl;
       const userDocRef = doc(db, 'users', currentProfile.uid);
-      await updateDoc(userDocRef, { photoURL: dataUrl });
-      setTargetProfile(prev => prev ? { ...prev, photoURL: dataUrl } : null);
-      await syncAuthorPosts({ authorPhoto: dataUrl });
+      await updateDoc(userDocRef, { photoURL: avatarValue });
+      setTargetProfile(prev => prev ? { ...prev, photoURL: avatarValue } : null);
+      await syncAuthorPosts({ authorPhoto: avatarValue });
       setAvatarProgress(100);
     } catch (err) {
       const msg = getImageErrorMessage(err, t);
@@ -3322,9 +3550,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         setError(t('imageTooLarge'));
         return;
       }
+      const headerValue = STORAGE_ENABLED
+        ? await uploadBlobToStorage(`profiles/${currentProfile.uid}/header.jpg`, await dataUrlToBlob(dataUrl), setHeaderProgress)
+        : dataUrl;
       const userDocRef = doc(db, 'users', currentProfile.uid);
-      await updateDoc(userDocRef, { headerURL: dataUrl });
-      setTargetProfile(prev => prev ? { ...prev, headerURL: dataUrl } : null);
+      await updateDoc(userDocRef, { headerURL: headerValue });
+      setTargetProfile(prev => prev ? { ...prev, headerURL: headerValue } : null);
       setHeaderProgress(100);
     } catch (err) {
       const msg = getImageErrorMessage(err, t);
@@ -3365,6 +3596,15 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     }
   };
 
+  const updatePushPrefs = async (patch: Partial<NonNullable<UserProfile['pushPrefs']>>) => {
+    if (!currentProfile) return;
+    setPushPrefs(prev => {
+      const next = { ...prev, ...patch };
+      updateDoc(doc(db, 'users', currentProfile.uid), { pushPrefs: next }).catch(() => {});
+      return next;
+    });
+  };
+
   const handleFollow = async () => {
     if (!currentProfile || !effectiveUid) return;
     const followId = currentProfile.uid + '_' + effectiveUid;
@@ -3377,6 +3617,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         followerUid: currentProfile.uid,
         followingUid: effectiveUid,
         status,
+        postNotifications: false,
         createdAt: serverTimestamp()
       });
       
@@ -3424,6 +3665,19 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
           showToast(t('blockFailed'), "error");
         }
       }
+    }
+  };
+
+  const handleTogglePostAlerts = async () => {
+    if (!currentProfile || !effectiveUid) return;
+    const followId = currentProfile.uid + '_' + effectiveUid;
+    const next = !postAlertsEnabled;
+    setPostAlertsEnabled(next);
+    try {
+      await updateDoc(doc(db, 'follows', followId), { postNotifications: next });
+    } catch (err) {
+      setPostAlertsEnabled(!next);
+      showToast(t('genericError'), 'error');
     }
   };
 
@@ -3603,6 +3857,21 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
               >
                 {isFollowing ? t('followingBtn') : followRequested ? t('requested') : t('follow')}
               </button>
+              {isFollowing && (
+                <button
+                  type="button"
+                  onClick={handleTogglePostAlerts}
+                  className={cn(
+                    "px-4 py-2 rounded-full font-bold transition-all text-xs border",
+                    postAlertsEnabled
+                      ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300 border-blue-100 dark:border-blue-900/40"
+                      : "bg-white dark:bg-zinc-900 text-gray-400 hover:text-blue-500 border-gray-200 dark:border-zinc-700"
+                  )}
+                  title={t('postAlertsHint')}
+                >
+                  {postAlertsEnabled ? <BellRing size={16} /> : <BellOff size={16} />}
+                </button>
+              )}
               <button 
                 onClick={handleBlock}
                 className={cn(
@@ -3916,13 +4185,20 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   <button
                     onClick={async () => {
                       if (!pushEnabled) {
-                        if (typeof window !== 'undefined' && 'Notification' in window) {
-                          const perm = await Notification.requestPermission();
-                          setPushEnabled(perm === 'granted');
+                        const vapidKey = import.meta.env.VITE_FCM_VAPID_KEY || '';
+                        if (!vapidKey) {
+                          showToast('Missing VITE_FCM_VAPID_KEY', 'error');
+                          return;
+                        }
+                        const res = await enableWebPush({ app, db: db as any, userUid: currentProfile.uid, vapidKey });
+                        if (res.ok) {
+                          setPushEnabled(true);
+                          showToast(t('pushNotifications'), 'success');
                         } else {
-                          alert('Push notifications not supported in this browser');
+                          showToast(res.reason === 'denied' ? t('pushDenied') : t('genericError'), 'error');
                         }
                       } else {
+                        await disableWebPush({ db: db as any, userUid: currentProfile.uid });
                         setPushEnabled(false);
                       }
                     }}
@@ -3936,6 +4212,61 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                     {pushEnabled ? t('on') : t('off')}
                   </button>
                 </div>
+                {pushEnabled && (
+                  <div className="bg-gray-50/70 dark:bg-zinc-800/40 border border-gray-100 dark:border-zinc-800 rounded-2xl p-3">
+                    <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-2">{t('pushNotifications')}</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updatePushPrefs({ likes: !pushPrefs.likes })}
+                        className={cn(
+                          "px-3 py-2 rounded-xl text-xs font-bold border transition-colors",
+                          pushPrefs.likes
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('pushLikes')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updatePushPrefs({ comments: !pushPrefs.comments })}
+                        className={cn(
+                          "px-3 py-2 rounded-xl text-xs font-bold border transition-colors",
+                          pushPrefs.comments
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('pushComments')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updatePushPrefs({ follows: !pushPrefs.follows })}
+                        className={cn(
+                          "px-3 py-2 rounded-xl text-xs font-bold border transition-colors",
+                          pushPrefs.follows
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('pushFollows')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updatePushPrefs({ messages: !pushPrefs.messages })}
+                        className={cn(
+                          "px-3 py-2 rounded-xl text-xs font-bold border transition-colors",
+                          pushPrefs.messages
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('pushMessages')}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="font-bold text-sm">{t('toastsToggle')}</div>
@@ -4025,6 +4356,8 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
   const [followingUids, setFollowingUids] = useState<string[]>([]);
   const [recentChats, setRecentChats] = useState<UserProfile[]>([]);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const recentChatKeyRef = useRef('');
+  const recentChatFetchId = useRef(0);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
@@ -4056,24 +4389,65 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
         setUnreadCounts(counts);
       });
 
-      // Get recent messages to find people you've chatted with
-      const qMsgs = query(
-        collection(db, 'messages'),
-        where('senderUid', '==', profile.uid),
-        orderBy('createdAt', 'desc'),
-        limit(20)
-      );
-      const unsubMsgs = onSnapshot(qMsgs, async (snapshot) => {
-        const uids = Array.from(new Set(snapshot.docs.map(d => (d.data() as Message).receiverUid)));
+      // Recent chats: include both sent and received messages and sort by last message.
+      let sent: Message[] = [];
+      let received: Message[] = [];
+
+      const rebuildRecentChats = async () => {
+        const combined = [...sent, ...received].filter(m => m.createdAt);
+        combined.sort((a, b) => {
+          const at = a.createdAt?.toDate?.().getTime?.() ?? 0;
+          const bt = b.createdAt?.toDate?.().getTime?.() ?? 0;
+          return bt - at;
+        });
+
+        const lastByPartner = new Map<string, Message>();
+        for (const m of combined) {
+          const partner = m.senderUid === profile.uid ? m.receiverUid : m.senderUid;
+          if (partner && partner !== profile.uid && !lastByPartner.has(partner)) {
+            lastByPartner.set(partner, m);
+          }
+        }
+
+        const uids = Array.from(lastByPartner.keys()).slice(0, 20);
+        const key = uids.join('|');
+        if (key === recentChatKeyRef.current) return;
+        recentChatKeyRef.current = key;
+
+        const fetchId = ++recentChatFetchId.current;
         const chatUsers: UserProfile[] = [];
         for (const uid of uids) {
           const d = await getDoc(doc(db, 'users', uid));
+          if (fetchId !== recentChatFetchId.current) return;
           if (d.exists()) chatUsers.push(d.data() as UserProfile);
         }
+        chatUsers.sort((a, b) => uids.indexOf(a.uid) - uids.indexOf(b.uid));
         setRecentChats(chatUsers);
+      };
+
+      const qSent = query(
+        collection(db, 'messages'),
+        where('senderUid', '==', profile.uid),
+        orderBy('createdAt', 'desc'),
+        limit(30)
+      );
+      const qReceived = query(
+        collection(db, 'messages'),
+        where('receiverUid', '==', profile.uid),
+        orderBy('createdAt', 'desc'),
+        limit(30)
+      );
+
+      const unsubSent = onSnapshot(qSent, (snapshot) => {
+        sent = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message));
+        rebuildRecentChats();
+      });
+      const unsubReceived = onSnapshot(qReceived, (snapshot) => {
+        received = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message));
+        rebuildRecentChats();
       });
 
-      return () => { unsubscribe(); unsubFollows(); unsubMsgs(); unsubUnread(); };
+      return () => { unsubscribe(); unsubFollows(); unsubUnread(); unsubSent(); unsubReceived(); };
     }
     return unsubscribe;
   }, [profile]);
@@ -4225,6 +4599,10 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const isAtBottomRef = useRef(true);
+  const [unseenIncoming, setUnseenIncoming] = useState(0);
+  const lastSeenAtBottomId = useRef<string | null>(null);
+  const didInitialScroll = useRef(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -4232,9 +4610,22 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const [deleteMenuId, setDeleteMenuId] = useState<string | null>(null);
   const [isTyping, setIsTyping] = useState(false);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [messageSearch, setMessageSearch] = useState('');
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
   const messageMenuRef = useRef<HTMLDivElement | null>(null);
   const typingTimeout = useRef<number | null>(null);
   const lastTypingPing = useRef(0);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingMs, setRecordingMs] = useState(0);
+  const recordingMsRef = useRef(0);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderStreamRef = useRef<MediaStream | null>(null);
+  const recorderChunksRef = useRef<BlobPart[]>([]);
+  const recordTimerRef = useRef<number | null>(null);
+  const [audioUploading, setAudioUploading] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const pendingAudioSendRef = useRef(false);
 
   useEffect(() => {
     const unsubReceiver = onSnapshot(doc(db, 'users', receiverUid), (d) => {
@@ -4263,6 +4654,22 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           updateDoc(doc(db, 'messages', m.id), { read: true }).catch(console.error);
         }
       });
+
+      // When user isn't at the bottom, keep a lightweight "new incoming" counter.
+      const lastSeenId = lastSeenAtBottomId.current;
+      if (!isAtBottomRef.current) {
+        if (!lastSeenId) {
+          lastSeenAtBottomId.current = filtered[filtered.length - 1]?.id ?? null;
+          setUnseenIncoming(0);
+        } else {
+          const idx = filtered.findIndex(m => m.id === lastSeenId);
+          const after = idx >= 0 ? filtered.slice(idx + 1) : filtered;
+          setUnseenIncoming(after.filter(m => m.senderUid === receiverUid).length);
+        }
+      } else {
+        lastSeenAtBottomId.current = filtered[filtered.length - 1]?.id ?? null;
+        setUnseenIncoming(0);
+      }
     });
     return () => {
       unsubscribe();
@@ -4305,8 +4712,37 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   }, [profile, receiverUid]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+    return () => {
+      if (recordTimerRef.current) {
+        window.clearInterval(recordTimerRef.current);
+        recordTimerRef.current = null;
+      }
+      try {
+        recorderRef.current?.stop();
+      } catch {}
+      recorderStreamRef.current?.getTracks().forEach(t => t.stop());
+      recorderRef.current = null;
+      recorderStreamRef.current = null;
+      recorderChunksRef.current = [];
+      pendingAudioSendRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const last = messages[messages.length - 1];
+    const shouldStick =
+      !didInitialScroll.current ||
+      isAtBottomRef.current ||
+      last.senderUid === profile?.uid;
+    if (!shouldStick) return;
+    bottomRef.current?.scrollIntoView({ behavior: didInitialScroll.current ? 'smooth' : 'auto' });
+    didInitialScroll.current = true;
+    isAtBottomRef.current = true;
+    setIsAtBottom(true);
+    lastSeenAtBottomId.current = last.id;
+    setUnseenIncoming(0);
+  }, [messages.length, profile?.uid]);
 
   const setTypingState = (typing: boolean) => {
     if (!profile) return;
@@ -4323,6 +4759,11 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     const threshold = 80;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
     setIsAtBottom(atBottom);
+    isAtBottomRef.current = atBottom;
+    if (atBottom) {
+      lastSeenAtBottomId.current = messages[messages.length - 1]?.id ?? null;
+      setUnseenIncoming(0);
+    }
   };
 
   const handleSend = async (e: React.FormEvent) => {
@@ -4406,6 +4847,137 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const handleStartEdit = (m: Message) => {
     setEditingId(m.id);
     setEditText(m.text || '');
+  };
+
+  const handleCopy = async (m: Message) => {
+    try {
+      const value = (m.text || '').trim();
+      if (!value) return;
+      await navigator.clipboard.writeText(value);
+      showToast(t('copied'), 'success');
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    } finally {
+      setSelectedMessageId(null);
+    }
+  };
+
+  const startRecording = async () => {
+    if (!profile || isRecording || audioUploading) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recorderStreamRef.current = stream;
+
+      const options: MediaRecorderOptions = {};
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        options.mimeType = 'audio/webm;codecs=opus';
+      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+        options.mimeType = 'audio/webm';
+      }
+
+      const recorder = new MediaRecorder(stream, options);
+      recorderRef.current = recorder;
+      recorderChunksRef.current = [];
+      pendingAudioSendRef.current = true;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recorderChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        if (!pendingAudioSendRef.current) return;
+        pendingAudioSendRef.current = false;
+        const mime = recorder.mimeType || 'audio/webm';
+        const blob = new Blob(recorderChunksRef.current, { type: mime });
+        recorderChunksRef.current = [];
+        recorderStreamRef.current?.getTracks().forEach(t => t.stop());
+        recorderStreamRef.current = null;
+
+        if (blob.size < 2000) return;
+        if (!STORAGE_ENABLED) {
+          showToast(t('uploadFailed'), 'error');
+          return;
+        }
+
+        try {
+          setAudioUploading(true);
+          setAudioProgress(0);
+          const ext = mime.includes('ogg') ? 'ogg' : 'webm';
+          const path = `chats/${profile.uid}/${receiverUid}/audio_${Date.now()}.${ext}`;
+          const url = await uploadBlobToStorage(path, blob, setAudioProgress);
+          await addDoc(collection(db, 'messages'), {
+            senderUid: profile.uid,
+            receiverUid,
+            text: '',
+            audioUrl: url,
+            audioDurationMs: recordingMsRef.current,
+            createdAt: serverTimestamp(),
+            read: false
+          });
+        } catch (err) {
+          showToast(t('uploadFailed'), 'error');
+        } finally {
+          setAudioUploading(false);
+          setAudioProgress(0);
+        }
+      };
+
+      setRecordingMs(0);
+      recordingMsRef.current = 0;
+      setIsRecording(true);
+      recorder.start();
+      if (recordTimerRef.current) window.clearInterval(recordTimerRef.current);
+      recordTimerRef.current = window.setInterval(() => {
+        recordingMsRef.current += 250;
+        setRecordingMs(recordingMsRef.current);
+      }, 250);
+    } catch (err) {
+      showToast(t('microphoneDenied'), 'error');
+      setIsRecording(false);
+    }
+  };
+
+  const stopRecording = () => {
+    if (!isRecording) return;
+    setIsRecording(false);
+    if (recordTimerRef.current) {
+      window.clearInterval(recordTimerRef.current);
+      recordTimerRef.current = null;
+    }
+    try {
+      recorderRef.current?.stop();
+    } catch {}
+    recorderRef.current = null;
+  };
+
+  const cancelRecording = () => {
+    pendingAudioSendRef.current = false;
+    stopRecording();
+    recorderStreamRef.current?.getTracks().forEach(t => t.stop());
+    recorderStreamRef.current = null;
+    recorderChunksRef.current = [];
+    setRecordingMs(0);
+    recordingMsRef.current = 0;
+  };
+
+  const searchMatches = useMemo(() => {
+    const q = messageSearch.trim().toLowerCase();
+    if (!q) return [];
+    const ids: string[] = [];
+    for (const m of messages) {
+      const text = (m.text || '').toLowerCase();
+      if (text.includes(q)) ids.push(m.id);
+    }
+    return ids;
+  }, [messages, messageSearch]);
+
+  useEffect(() => {
+    if (activeSearchIndex >= searchMatches.length) setActiveSearchIndex(0);
+  }, [searchMatches.length, activeSearchIndex]);
+
+  const jumpToSearchMatch = (index: number) => {
+    const id = searchMatches[index];
+    if (!id) return;
+    document.getElementById(`msg-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   const handleSaveEdit = async (m: Message) => {
@@ -4528,10 +5100,99 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             </div>
           )}
         </div>
-        <button className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors">
-          <MoreVertical size={20} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => {
+              setShowSearch(prev => {
+                const next = !prev;
+                if (!next) {
+                  setMessageSearch('');
+                  setActiveSearchIndex(0);
+                }
+                return next;
+              });
+            }}
+            className={cn(
+              "p-2 rounded-full transition-colors",
+              showSearch ? "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20" : "text-gray-400 hover:text-black dark:hover:text-white"
+            )}
+            title={t('searchPosts')}
+          >
+            <Search size={20} />
+          </button>
+          <button className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors">
+            <MoreVertical size={20} />
+          </button>
+        </div>
       </div>
+
+      <AnimatePresence initial={false}>
+        {showSearch && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            className="px-4 pb-3"
+          >
+            <div className="flex items-center gap-2 bg-gray-100 dark:bg-zinc-900 rounded-2xl p-2 border border-gray-100 dark:border-zinc-800">
+              <Search size={16} className="text-gray-400" />
+              <input
+                value={messageSearch}
+                onChange={(e) => {
+                  setMessageSearch(e.target.value);
+                  setActiveSearchIndex(0);
+                }}
+                placeholder={t('searchEverything')}
+                className="flex-1 bg-transparent border-none focus:outline-none text-sm px-1 placeholder:text-gray-400"
+              />
+              {searchMatches.length > 0 && (
+                <div className="text-[10px] text-gray-500 dark:text-gray-400 font-bold tabular-nums px-2">
+                  {activeSearchIndex + 1}/{searchMatches.length}
+                </div>
+              )}
+              <button
+                type="button"
+                disabled={searchMatches.length === 0}
+                onClick={() => {
+                  const next = searchMatches.length === 0
+                    ? 0
+                    : (activeSearchIndex - 1 + searchMatches.length) % searchMatches.length;
+                  setActiveSearchIndex(next);
+                  jumpToSearchMatch(next);
+                }}
+                className="px-2 py-1 text-xs font-bold text-gray-400 hover:text-black dark:hover:text-white disabled:opacity-30"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                disabled={searchMatches.length === 0}
+                onClick={() => {
+                  const next = searchMatches.length === 0
+                    ? 0
+                    : (activeSearchIndex + 1) % searchMatches.length;
+                  setActiveSearchIndex(next);
+                  jumpToSearchMatch(next);
+                }}
+                className="px-2 py-1 text-xs font-bold text-gray-400 hover:text-black dark:hover:text-white disabled:opacity-30"
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMessageSearch('');
+                  setActiveSearchIndex(0);
+                }}
+                className="p-1.5 rounded-full text-gray-400 hover:text-black dark:hover:text-white transition-colors"
+                title={t('clear')}
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {pinnedMessages.length > 0 && (
@@ -4654,6 +5315,22 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                       onClick={() => onOpenImage(m.imageUrl!)}
                     />
                   )}
+                  {m.audioUrl && !isDeleted && (
+                    <div className={cn(
+                      "mb-2 rounded-xl border p-2",
+                      isMe
+                        ? "border-white/20 bg-white/10 dark:border-black/10 dark:bg-black/5"
+                        : "border-gray-100 dark:border-zinc-700 bg-gray-50/70 dark:bg-zinc-900/40"
+                    )}>
+                      <div className={cn(
+                        "text-[10px] font-bold uppercase tracking-widest mb-1",
+                        isMe ? "text-white/80 dark:text-black/70" : "text-gray-500 dark:text-gray-400"
+                      )}>
+                        {t('voiceMessage')}
+                      </div>
+                      <audio controls src={m.audioUrl} className="w-full h-8" />
+                    </div>
+                  )}
                   <AnimatePresence>
                     {editingId === m.id ? (
                       <motion.div
@@ -4724,6 +5401,24 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                       >
                         <MessageCircle size={16} />
                       </button>
+                      {!!m.text?.trim() && (
+                        <button
+                          onClick={() => handleCopy(m)}
+                          className="p-1.5 text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-full transition-all active:scale-90"
+                          title={t('copy')}
+                        >
+                          <Copy size={16} />
+                        </button>
+                      )}
+                      {isMe && !!m.text?.trim() && (
+                        <button
+                          onClick={() => { handleStartEdit(m); setSelectedMessageId(null); }}
+                          className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-500/10 rounded-full transition-all active:scale-90"
+                          title={t('editMessage')}
+                        >
+                          <Edit3 size={16} />
+                        </button>
+                      )}
                       {isMe && (
                         <button
                           onClick={() => { setDeleteMenuId(deleteMenuId === m.id ? null : m.id); }}
@@ -4827,6 +5522,24 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                       <MessageCircle size={14} />
                       {t('reply')}
                     </button>
+                    {!!m.text?.trim() && (
+                      <button
+                        onClick={() => handleCopy(m)}
+                        className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-zinc-800 flex items-center gap-2"
+                      >
+                        <Copy size={14} />
+                        {t('copy')}
+                      </button>
+                    )}
+                    {isMe && !!m.text?.trim() && (
+                      <button
+                        onClick={() => { handleStartEdit(m); setSelectedMessageId(null); }}
+                        className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-zinc-800 flex items-center gap-2"
+                      >
+                        <Edit3 size={14} />
+                        {t('editMessage')}
+                      </button>
+                    )}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -4886,11 +5599,71 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             </div>
           </div>
         )}
+        {audioUploading && (
+          <div className="mb-2 px-2">
+            <div className="flex justify-between text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">
+              <span>{t('uploading')}</span>
+              <span className="tabular-nums">{Math.round(audioProgress)}%</span>
+            </div>
+            <div className="h-1 bg-gray-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+              <motion.div
+                className="h-full bg-black dark:bg-white"
+                initial={{ width: 0 }}
+                animate={{ width: `${audioProgress}%` }}
+              />
+            </div>
+          </div>
+        )}
+        {isRecording && (
+          <div className="mb-2 px-2">
+            <div className="flex items-center justify-between bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/20 rounded-2xl px-3 py-2">
+              <div className="flex items-center gap-2 text-[11px] text-red-600 dark:text-red-400 font-bold">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                {t('recording')}
+                <span className="tabular-nums opacity-80">{Math.floor(recordingMs / 1000)}s</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={cancelRecording}
+                  className="text-[10px] font-bold text-gray-400 hover:text-red-500 transition-colors"
+                >
+                  {t('cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={stopRecording}
+                  className="px-3 py-1.5 rounded-full text-[10px] font-bold bg-red-500 text-white hover:bg-red-600 transition-colors"
+                >
+                  {t('stopRecording')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="flex gap-2 bg-gray-100 dark:bg-zinc-900 rounded-2xl p-2 items-center shadow-inner">
           <label className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors cursor-pointer">
             <Plus size={20} />
             <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={uploading} />
           </label>
+          <button
+            type="button"
+            onClick={() => {
+              if (isRecording) stopRecording();
+              else startRecording();
+            }}
+            disabled={audioUploading || uploading}
+            className={cn(
+              "p-2 rounded-xl transition-colors",
+              isRecording
+                ? "bg-red-500 text-white"
+                : "text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200/70 dark:hover:bg-zinc-800/70",
+              (audioUploading || uploading) && "opacity-30"
+            )}
+            title={isRecording ? t('stopRecording') : t('startRecording')}
+          >
+            {isRecording ? <Square size={18} /> : <Mic size={18} />}
+          </button>
           <input
             value={text}
             onChange={(e) => handleTypingChange(e.target.value)}
@@ -4906,11 +5679,11 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             }}
             placeholder={t('typeMessage')}
             className="flex-1 bg-transparent border-none focus:outline-none text-sm px-2 placeholder:text-gray-400"
-            disabled={uploading}
+            disabled={uploading || audioUploading || isRecording}
           />
           <button 
             type="submit"
-            disabled={(!text.trim() && !uploading) || uploading}
+            disabled={(!text.trim() && !uploading) || uploading || audioUploading || isRecording}
             className="bg-black dark:bg-white text-white dark:text-black p-2 rounded-xl disabled:opacity-30 transition-all hover:scale-105 active:scale-95 shadow-md"
           >
             <Send size={18} />
@@ -4919,10 +5692,16 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
       </form>
       {!isAtBottom && messages.length > 6 && (
         <button
-          onClick={() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' })}
+          onClick={() => {
+            bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+            isAtBottomRef.current = true;
+            setIsAtBottom(true);
+            lastSeenAtBottomId.current = messages[messages.length - 1]?.id ?? null;
+            setUnseenIncoming(0);
+          }}
           className="fixed bottom-24 right-4 md:right-8 z-20 bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-full text-xs font-bold shadow-lg"
         >
-          ↓ {t('messages')}
+          ↓ {unseenIncoming > 0 ? t('newMessages').replace('{count}', String(unseenIncoming)) : t('messages')}
         </button>
       )}
     </div>
@@ -5486,6 +6265,8 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
   const { profile } = useAuth();
   const { t } = useSettings();
   const [comments, setComments] = useState<Comment[]>([]);
+  const [commentsLimit, setCommentsLimit] = useState(60);
+  const [hasMoreComments, setHasMoreComments] = useState(true);
   const [commentText, setCommentText] = useState('');
   const [likedByUsers, setLikedByUsers] = useState<UserProfile[]>([]);
   const [replyTo, setReplyTo] = useState<Comment | null>(null);
@@ -5494,12 +6275,17 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
   const [collapsedCommentBranches, setCollapsedCommentBranches] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    const q = query(collection(db, 'posts', post.id, 'comments'), orderBy('createdAt', 'asc'));
+    const q = query(
+      collection(db, 'posts', post.id, 'comments'),
+      orderBy('createdAt', 'asc'),
+      limit(commentsLimit)
+    );
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      setHasMoreComments(snapshot.size >= commentsLimit);
       setComments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment)));
     });
     return unsubscribe;
-  }, [post.id]);
+  }, [post.id, commentsLimit]);
 
   useEffect(() => {
     const longBranchIds = collectLongCommentBranchIds(
@@ -5650,6 +6436,18 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
         <h3 className="font-bold text-lg mb-4">
           {t('commentsTitle').replace('{count}', String(comments.length))}
         </h3>
+
+        {hasMoreComments && (
+          <div className="mb-3 flex justify-center">
+            <button
+              type="button"
+              onClick={() => setCommentsLimit(prev => prev + 60)}
+              className="text-xs font-bold text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-zinc-800 px-3 py-1.5 rounded-full transition-colors"
+            >
+              {t('loadMore')}
+            </button>
+          </div>
+        )}
         
         {replyTo && (
           <div className="flex items-center gap-2 mb-2 text-xs text-gray-500 bg-gray-50 dark:bg-zinc-800 p-2 rounded-full">
@@ -5772,6 +6570,23 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
   const { showToast } = useToast();
   const { t } = useSettings();
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const hiddenNotificationIdsRef = useRef<Record<string, boolean>>({});
+  const lastNotificationSnapshotRef = useRef<Notification[]>([]);
+
+  const refreshNotificationsFromSnapshot = () => {
+    const hidden = hiddenNotificationIdsRef.current;
+    setNotifications(lastNotificationSnapshotRef.current.filter(n => !hidden[n.id]));
+  };
+
+  const hideNotification = (id: string) => {
+    hiddenNotificationIdsRef.current[id] = true;
+    refreshNotificationsFromSnapshot();
+  };
+
+  const unhideNotification = (id: string) => {
+    delete hiddenNotificationIdsRef.current[id];
+    refreshNotificationsFromSnapshot();
+  };
 
   useEffect(() => {
     if (!profile) return;
@@ -5782,14 +6597,19 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
       limit(50)
     );
     const unsubscribe = onSnapshot(q, (s) => {
-      setNotifications(s.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
+      const snapshotNotifications = s.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification));
+      lastNotificationSnapshotRef.current = snapshotNotifications;
+      const hidden = hiddenNotificationIdsRef.current;
+      setNotifications(snapshotNotifications.filter(n => !hidden[n.id]));
     });
     return unsubscribe;
   }, [profile]);
 
   const handleNotificationClick = async (n: Notification) => {
     if (!n.read) {
-      await updateDoc(doc(db, 'notifications', n.id), { read: true });
+      // Optimistic UI: make it feel instant.
+      setNotifications(prev => prev.map(item => item.id === n.id ? { ...item, read: true } : item));
+      updateDoc(doc(db, 'notifications', n.id), { read: true }).catch(() => {});
     }
     if (n.postId) {
       const postDoc = await getDoc(doc(db, 'posts', n.postId));
@@ -5828,6 +6648,7 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
       case 'comment': return t('commentMessage');
       case 'follow': return t('followMessage');
       case 'follow_request': return t('followRequestMessage');
+      case 'new_post': return t('newPostMessage');
       case 'repost': return t('repostMessage');
       default: return t('interactedMessage');
     }
@@ -5835,14 +6656,20 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 
   const handleApproveRequest = async (n: Notification) => {
     if (!profile) return;
+    hideNotification(n.id);
     try {
       const followId = n.fromUid + '_' + profile.uid;
-      await setDoc(doc(db, 'follows', followId), {
-        followerUid: n.fromUid,
-        followingUid: profile.uid,
-        status: 'approved',
-        createdAt: serverTimestamp()
-      });
+      try {
+        await updateDoc(doc(db, 'follows', followId), { status: 'approved' });
+      } catch {
+        await setDoc(doc(db, 'follows', followId), {
+          followerUid: n.fromUid,
+          followingUid: profile.uid,
+          status: 'approved',
+          postNotifications: false,
+          createdAt: serverTimestamp()
+        });
+      }
       await addDoc(collection(db, 'notifications'), {
         type: 'follow',
         fromUid: profile.uid,
@@ -5852,21 +6679,24 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
         createdAt: serverTimestamp(),
         read: false
       });
-      await updateDoc(doc(db, 'notifications', n.id), { read: true });
+      await deleteDoc(doc(db, 'notifications', n.id));
       showToast(t('followApproved'), 'success');
     } catch (err) {
+      unhideNotification(n.id);
       showToast(t('genericError'), 'error');
     }
   };
 
   const handleRejectRequest = async (n: Notification) => {
     if (!profile) return;
+    hideNotification(n.id);
     try {
       const followId = n.fromUid + '_' + profile.uid;
       await deleteDoc(doc(db, 'follows', followId));
-      await updateDoc(doc(db, 'notifications', n.id), { read: true });
+      await deleteDoc(doc(db, 'notifications', n.id));
       showToast(t('followRejected'), 'info');
     } catch (err) {
+      unhideNotification(n.id);
       showToast(t('genericError'), 'error');
     }
   };
@@ -5896,15 +6726,30 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
         {notifications.length === 0 && (
           <div className="text-center py-10 text-gray-400">{t('notificationsEmpty')}</div>
         )}
+        <AnimatePresence initial={false}>
         {notifications.map(n => (
-          <div 
+          <motion.div
             key={n.id} 
             onClick={() => handleNotificationClick(n)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleNotificationClick(n);
+              }
+            }}
             className={cn(
-              "flex items-center gap-4 p-4 rounded-2xl border transition-all",
-              n.postId ? "cursor-pointer hover:border-gray-300 dark:hover:border-zinc-700" : "",
-              n.read ? "bg-white dark:bg-zinc-900 border-gray-100 dark:border-zinc-800" : "bg-blue-50/50 dark:bg-blue-900/10 border-blue-100 dark:border-blue-900/30"
+              "w-full text-left flex items-center gap-4 p-4 rounded-2xl border transition-all cursor-pointer hover:border-gray-300 dark:hover:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-blue-500/50",
+              n.read
+                ? "bg-white dark:bg-zinc-900 border-gray-100 dark:border-zinc-800"
+                : "bg-blue-50/50 dark:bg-blue-900/10 border-blue-100 dark:border-blue-900/30"
             )}
+            layout
+            initial={{ opacity: 0, y: 6, scale: 0.99 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.98 }}
+            whileTap={{ scale: 0.985 }}
           >
             <img src={n.fromPhoto} className="w-10 h-10 rounded-full" referrerPolicy="no-referrer" />
             <div className="flex-1">
@@ -5932,8 +6777,9 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
                 </div>
               )}
             </div>
-          </div>
+          </motion.div>
         ))}
+        </AnimatePresence>
       </div>
     </div>
   );
