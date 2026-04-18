@@ -59,6 +59,8 @@ import {
   Bell,
   BellRing,
   BellOff,
+  Sticker,
+  Film,
   Image as ImageIcon,
   X,
   Search,
@@ -497,6 +499,12 @@ const translations = {
     fileReadFailed: 'Could not read the file',
     imageDecodeFailed: 'Could not process the image',
     canvasNotSupported: 'Your browser does not support image processing',
+    storageUnauthorized: 'Storage permission denied (check Firebase Storage rules)',
+    storageUnauthenticated: 'Please sign in again to upload',
+    storageRetryLimit: 'Upload failed (retry limit exceeded)',
+    storageQuota: 'Storage quota exceeded',
+    storageCanceled: 'Upload canceled',
+    gifTooLarge: 'GIF is too large',
     uploadFailed: 'Upload failed',
     add: 'Add',
     post: 'Post',
@@ -566,6 +574,12 @@ const translations = {
     stopRecording: 'Stop recording',
     recording: 'Recording...',
     microphoneDenied: 'Microphone access denied',
+    gifs: 'GIFs',
+    stickers: 'Stickers',
+    searchGifs: 'Search GIFs...',
+    searchStickers: 'Search stickers...',
+    tenorKeyMissing: 'Missing Tenor API key',
+    noResults: 'No results',
     typing: 'typing...',
     edited: 'edited',
     shareCopied: 'Link copied to clipboard!',
@@ -755,6 +769,12 @@ const translations = {
     fileReadFailed: 'Не удалось прочитать файл',
     imageDecodeFailed: 'Не удалось обработать изображение',
     canvasNotSupported: 'Ваш браузер не поддерживает обработку изображений',
+    storageUnauthorized: 'Нет прав на загрузку (проверьте Firebase Storage rules)',
+    storageUnauthenticated: 'Нужно заново войти, чтобы загружать файлы',
+    storageRetryLimit: 'Загрузка не удалась (слишком много попыток)',
+    storageQuota: 'Превышена квота Storage',
+    storageCanceled: 'Загрузка отменена',
+    gifTooLarge: 'GIF слишком большой',
     uploadFailed: 'Не удалось загрузить',
     add: 'Добавить',
     post: 'Опубликовать',
@@ -824,6 +844,12 @@ const translations = {
     stopRecording: 'Остановить запись',
     recording: 'Запись...',
     microphoneDenied: 'Нет доступа к микрофону',
+    gifs: 'GIF',
+    stickers: 'Стикеры',
+    searchGifs: 'Поиск GIF...',
+    searchStickers: 'Поиск стикеров...',
+    tenorKeyMissing: 'Не задан ключ Tenor',
+    noResults: 'Ничего не найдено',
     typing: 'печатает...',
     edited: 'изменено',
     shareCopied: 'Ссылка скопирована!',
@@ -937,6 +963,7 @@ type TranslationKey = keyof typeof translations.en;
 const STORAGE_ENABLED = import.meta.env.VITE_STORAGE_ENABLED !== 'false';
 const MAX_IMAGE_BYTES = 700 * 1024;
 const MAX_IMAGE_DIM = 1280;
+const MAX_GIF_BYTES = 6 * 1024 * 1024;
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes}B`;
@@ -973,6 +1000,39 @@ const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: num
   });
 };
 
+type TenorGifItem = { url: string; previewUrl: string };
+
+const fetchTenorGifs = async (t: (key: TranslationKey) => string, query: string, limitCount: number) => {
+  const key = import.meta.env.VITE_TENOR_API_KEY || '';
+  if (!key) throw new Error('tenor_key_missing');
+  const q = query.trim();
+  const endpoint = q ? 'search' : 'featured';
+  const params = new URLSearchParams();
+  params.set('key', key);
+  params.set('client_key', 'zimo');
+  params.set('limit', String(limitCount));
+  params.set('media_filter', 'gif,tinygif');
+  params.set('contentfilter', 'medium');
+  if (q) params.set('q', q);
+  const url = `https://tenor.googleapis.com/v2/${endpoint}?${params.toString()}`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('tenor_bad_response');
+  const json: any = await res.json();
+  const results = Array.isArray(json?.results) ? json.results : [];
+  const items = results
+    .map((r: any) => {
+      const fm = r?.media_formats || r?.media || {};
+      const full = fm.gif?.url || fm.mediumgif?.url || fm.tinygif?.url || '';
+      const prev = fm.tinygif?.url || fm.nanogif?.url || full || '';
+      if (!full) return null;
+      return { url: full, previewUrl: prev || full };
+    })
+    .filter(Boolean) as TenorGifItem[];
+  if (items.length === 0) throw new Error('tenor_no_results');
+  return items;
+};
+
 const dataUrlToBlob = async (dataUrl: string) => {
   const res = await fetch(dataUrl);
   return await res.blob();
@@ -984,7 +1044,9 @@ const uploadBlobToStorage = async (
   onProgress?: (pct: number) => void
 ) => {
   const storageRef = ref(storage, path);
-  const uploadTask = uploadBytesResumable(storageRef, blob);
+  const uploadTask = uploadBytesResumable(storageRef, blob, {
+    contentType: blob.type || 'application/octet-stream',
+  });
 
   return await new Promise<string>((resolve, reject) => {
     uploadTask.on(
@@ -1023,6 +1085,25 @@ const getImageErrorMessage = (error: unknown, t: (key: TranslationKey) => string
       return t('imageDecodeFailed');
     case 'canvas_not_supported':
       return t('canvasNotSupported');
+    default:
+      return t('genericError');
+  }
+};
+
+const getStorageErrorMessage = (error: unknown, t: (key: TranslationKey) => string) => {
+  const anyErr = error as any;
+  const code: string = anyErr?.code || '';
+  switch (code) {
+    case 'storage/unauthorized':
+      return t('storageUnauthorized');
+    case 'storage/unauthenticated':
+      return t('storageUnauthenticated');
+    case 'storage/retry-limit-exceeded':
+      return t('storageRetryLimit');
+    case 'storage/quota-exceeded':
+      return t('storageQuota');
+    case 'storage/canceled':
+      return t('storageCanceled');
     default:
       return t('genericError');
   }
@@ -2887,6 +2968,11 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [showGifPicker, setShowGifPicker] = useState(false);
+  const [gifQuery, setGifQuery] = useState('');
+  const [gifItems, setGifItems] = useState<TenorGifItem[]>([]);
+  const [gifLoading, setGifLoading] = useState(false);
+  const [gifError, setGifError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -3032,6 +3118,29 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     }
   };
 
+  const loadGifPicker = async (q: string) => {
+    setGifLoading(true);
+    setGifError(null);
+    try {
+      const items = await fetchTenorGifs(t, q, 24);
+      setGifItems(items);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'tenor_key_missing') setGifError(t('tenorKeyMissing'));
+      else if (msg === 'tenor_no_results') setGifError(t('noResults'));
+      else setGifError(t('genericError'));
+      setGifItems([]);
+    } finally {
+      setGifLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showGifPicker) return;
+    const timer = window.setTimeout(() => loadGifPicker(gifQuery), 250);
+    return () => window.clearTimeout(timer);
+  }, [showGifPicker, gifQuery]);
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0 || !profile) return;
@@ -3043,6 +3152,43 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        // GIFs must not be re-encoded to JPEG (we'd lose animation).
+        if (file.type === 'image/gif') {
+          if (file.size > MAX_GIF_BYTES) {
+            setError(t('gifTooLarge'));
+            continue;
+          }
+          if (!STORAGE_ENABLED) {
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onerror = () => reject(new Error('file_read_failed'));
+              reader.onload = () => resolve(reader.result as string);
+              reader.readAsDataURL(file);
+            });
+            newUrls.push(dataUrl);
+            setUploadProgress(Math.round(((i + 1) / files.length) * 100));
+            continue;
+          }
+          try {
+            const filename = `posts/${profile.uid}/${Date.now()}_${i}.gif`;
+            const url = await uploadBlobToStorage(filename, file, (pct) => {
+              const overall = ((i + pct / 100) / files.length) * 100;
+              setUploadProgress(overall);
+            });
+            newUrls.push(url);
+          } catch (err) {
+            const msg = getStorageErrorMessage(err, t);
+            setError(`${t('uploadFailed')}: ${msg}`);
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onerror = () => reject(new Error('file_read_failed'));
+              reader.onload = () => resolve(reader.result as string);
+              reader.readAsDataURL(file);
+            });
+            newUrls.push(dataUrl);
+          }
+          continue;
+        }
         const { dataUrl, bytes } = await readAndCompressImage(file);
         if (bytes > MAX_IMAGE_BYTES) {
           setError(t('imageTooLarge'));
@@ -3054,13 +3200,21 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           continue;
         }
 
-        const blob = await dataUrlToBlob(dataUrl);
-        const filename = `posts/${profile.uid}/${Date.now()}_${i}.jpg`;
-        const url = await uploadBlobToStorage(filename, blob, (pct) => {
-          const overall = ((i + pct / 100) / files.length) * 100;
-          setUploadProgress(overall);
-        });
-        newUrls.push(url);
+        try {
+          const blob = await dataUrlToBlob(dataUrl);
+          const filename = `posts/${profile.uid}/${Date.now()}_${i}.jpg`;
+          const url = await uploadBlobToStorage(filename, blob, (pct) => {
+            const overall = ((i + pct / 100) / files.length) * 100;
+            setUploadProgress(overall);
+          });
+          newUrls.push(url);
+        } catch (err) {
+          // If Storage isn't configured (rules, bucket, etc.), don't block posting entirely.
+          const msg = getStorageErrorMessage(err, t);
+          setError(`${t('uploadFailed')}: ${msg}`);
+          newUrls.push(dataUrl);
+          setUploadProgress(Math.round(((i + 1) / files.length) * 100));
+        }
       }
       setImageUrls(prev => [...prev, ...newUrls]);
     } catch (err) {
@@ -3224,6 +3378,18 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                 />
                 {imageUrls.length > 0 && <span className="text-xs font-bold">{imageUrls.length}</span>}
               </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGifPicker(true);
+                  setGifQuery('');
+                }}
+                disabled={uploading}
+                className="p-2 text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-xl transition-colors"
+                title={t('gifs')}
+              >
+                <Film size={20} />
+              </button>
               {imageUrls.length > 0 && !uploading && (
                 <button 
                   type="button"
@@ -3266,6 +3432,82 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             </div>
           </div>
         </form>
+
+        <AnimatePresence>
+          {showGifPicker && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-end md:items-center justify-center p-3"
+              onClick={() => setShowGifPicker(false)}
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.98 }}
+                transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+                className="w-full max-w-2xl bg-white dark:bg-zinc-950 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-2xl overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="p-3 border-b dark:border-zinc-800 flex items-center justify-between bg-gray-50/60 dark:bg-zinc-900/30">
+                  <div className="flex items-center gap-2 font-bold text-sm">
+                    <Film size={16} />
+                    {t('gifs')}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowGifPicker(false)}
+                    className="p-2 rounded-full text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="p-3">
+                  <div className="flex items-center gap-2 bg-gray-100 dark:bg-zinc-900 rounded-2xl p-2 border border-gray-100 dark:border-zinc-800">
+                    <Search size={16} className="text-gray-400" />
+                    <input
+                      value={gifQuery}
+                      onChange={(e) => setGifQuery(e.target.value)}
+                      placeholder={t('searchGifs')}
+                      className="flex-1 bg-transparent border-none focus:outline-none text-sm px-1 placeholder:text-gray-400"
+                    />
+                    {gifLoading && (
+                      <div className="w-4 h-4 border-2 border-black/30 dark:border-white/30 border-t-transparent animate-spin rounded-full" />
+                    )}
+                  </div>
+
+                  {gifError && (
+                    <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">{gifError}</div>
+                  )}
+
+                  <div className="mt-3 grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-[50vh] overflow-y-auto pr-1">
+                    {gifItems.map((it) => (
+                      <button
+                        key={it.url}
+                        type="button"
+                        className="aspect-square rounded-2xl overflow-hidden bg-gray-50 dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 hover:opacity-90 transition-opacity"
+                        onClick={() => {
+                          setImageUrls(prev => [...prev, it.url]);
+                          setShowGifPicker(false);
+                        }}
+                      >
+                        <img
+                          src={it.previewUrl}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          alt="GIF"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <div className="space-y-6">
           <AnimatePresence mode="popLayout">
@@ -3518,9 +3760,19 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         setError(t('imageTooLarge'));
         return;
       }
-      const avatarValue = STORAGE_ENABLED
-        ? await uploadBlobToStorage(`profiles/${currentProfile.uid}/avatar.jpg`, await dataUrlToBlob(dataUrl), setAvatarProgress)
-        : dataUrl;
+      let avatarValue = dataUrl;
+      if (STORAGE_ENABLED) {
+        try {
+          avatarValue = await uploadBlobToStorage(
+            `profiles/${currentProfile.uid}/avatar.jpg`,
+            await dataUrlToBlob(dataUrl),
+            setAvatarProgress
+          );
+        } catch (err) {
+          setError(t('avatarUploadFailed').replace('{error}', getStorageErrorMessage(err, t)));
+          avatarValue = dataUrl;
+        }
+      }
       const userDocRef = doc(db, 'users', currentProfile.uid);
       await updateDoc(userDocRef, { photoURL: avatarValue });
       setTargetProfile(prev => prev ? { ...prev, photoURL: avatarValue } : null);
@@ -3550,9 +3802,19 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         setError(t('imageTooLarge'));
         return;
       }
-      const headerValue = STORAGE_ENABLED
-        ? await uploadBlobToStorage(`profiles/${currentProfile.uid}/header.jpg`, await dataUrlToBlob(dataUrl), setHeaderProgress)
-        : dataUrl;
+      let headerValue = dataUrl;
+      if (STORAGE_ENABLED) {
+        try {
+          headerValue = await uploadBlobToStorage(
+            `profiles/${currentProfile.uid}/header.jpg`,
+            await dataUrlToBlob(dataUrl),
+            setHeaderProgress
+          );
+        } catch (err) {
+          setError(t('headerUploadFailed').replace('{error}', getStorageErrorMessage(err, t)));
+          headerValue = dataUrl;
+        }
+      }
       const userDocRef = doc(db, 'users', currentProfile.uid);
       await updateDoc(userDocRef, { headerURL: headerValue });
       setTargetProfile(prev => prev ? { ...prev, headerURL: headerValue } : null);
@@ -4626,6 +4888,26 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const [audioUploading, setAudioUploading] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
   const pendingAudioSendRef = useRef(false);
+  const [showMediaPicker, setShowMediaPicker] = useState(false);
+  const [mediaTab, setMediaTab] = useState<'gif' | 'sticker'>('gif');
+  const [gifQuery, setGifQuery] = useState('');
+  const [gifItems, setGifItems] = useState<{ url: string; previewUrl: string }[]>([]);
+  const [gifLoading, setGifLoading] = useState(false);
+  const [gifError, setGifError] = useState<string | null>(null);
+
+  const STICKERS = useMemo(
+    () => [
+      '/stickers/heart.svg',
+      '/stickers/sparkle.svg',
+      '/stickers/smile.svg',
+      '/stickers/fire.svg',
+      '/stickers/party.svg',
+      '/stickers/ok.svg',
+      '/stickers/coffee.svg',
+      '/stickers/cat.svg',
+    ],
+    []
+  );
 
   useEffect(() => {
     const unsubReceiver = onSnapshot(doc(db, 'users', receiverUid), (d) => {
@@ -4979,6 +5261,43 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     if (!id) return;
     document.getElementById(`msg-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
+
+  const sendImageMessage = async (url: string) => {
+    if (!profile) return;
+    await addDoc(collection(db, 'messages'), {
+      senderUid: profile.uid,
+      receiverUid,
+      text: '',
+      imageUrl: url,
+      createdAt: serverTimestamp(),
+      read: false
+    });
+  };
+
+  const loadTenor = async (q: string) => {
+    setGifLoading(true);
+    setGifError(null);
+    try {
+      const items = await fetchTenorGifs(t, q, 24);
+      setGifItems(items);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'tenor_key_missing') setGifError(t('tenorKeyMissing'));
+      else if (msg === 'tenor_no_results') setGifError(t('noResults'));
+      else setGifError(t('genericError'));
+      setGifItems([]);
+    } finally {
+      setGifLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showMediaPicker || mediaTab !== 'gif') return;
+    const timer = window.setTimeout(() => {
+      loadTenor(gifQuery);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [showMediaPicker, mediaTab, gifQuery]);
 
   const handleSaveEdit = async (m: Message) => {
     if (!editText.trim()) return;
@@ -5649,6 +5968,37 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           <button
             type="button"
             onClick={() => {
+              setShowMediaPicker(true);
+              setMediaTab('gif');
+              setGifQuery('');
+            }}
+            disabled={uploading || audioUploading || isRecording}
+            className={cn(
+              "p-2 rounded-xl transition-colors text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200/70 dark:hover:bg-zinc-800/70",
+              (uploading || audioUploading || isRecording) && "opacity-30"
+            )}
+            title={t('gifs')}
+          >
+            <Film size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setShowMediaPicker(true);
+              setMediaTab('sticker');
+            }}
+            disabled={uploading || audioUploading || isRecording}
+            className={cn(
+              "p-2 rounded-xl transition-colors text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200/70 dark:hover:bg-zinc-800/70",
+              (uploading || audioUploading || isRecording) && "opacity-30"
+            )}
+            title={t('stickers')}
+          >
+            <Sticker size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
               if (isRecording) stopRecording();
               else startRecording();
             }}
@@ -5690,6 +6040,128 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           </button>
         </div>
       </form>
+
+      <AnimatePresence>
+        {showMediaPicker && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-end md:items-center justify-center p-3"
+            onClick={() => setShowMediaPicker(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.98 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+              className="w-full max-w-2xl bg-white dark:bg-zinc-950 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-3 border-b dark:border-zinc-800 flex items-center justify-between bg-gray-50/60 dark:bg-zinc-900/30">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMediaTab('gif')}
+                    className={cn(
+                      "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors flex items-center gap-2",
+                      mediaTab === 'gif'
+                        ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                        : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-900"
+                    )}
+                  >
+                    <Film size={14} />
+                    {t('gifs')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMediaTab('sticker')}
+                    className={cn(
+                      "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors flex items-center gap-2",
+                      mediaTab === 'sticker'
+                        ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                        : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-900"
+                    )}
+                  >
+                    <Sticker size={14} />
+                    {t('stickers')}
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMediaPicker(false)}
+                  className="p-2 rounded-full text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {mediaTab === 'gif' ? (
+                <div className="p-3">
+                  <div className="flex items-center gap-2 bg-gray-100 dark:bg-zinc-900 rounded-2xl p-2 border border-gray-100 dark:border-zinc-800">
+                    <Search size={16} className="text-gray-400" />
+                    <input
+                      value={gifQuery}
+                      onChange={(e) => setGifQuery(e.target.value)}
+                      placeholder={t('searchGifs')}
+                      className="flex-1 bg-transparent border-none focus:outline-none text-sm px-1 placeholder:text-gray-400"
+                    />
+                    {gifLoading && (
+                      <div className="w-4 h-4 border-2 border-black/30 dark:border-white/30 border-t-transparent animate-spin rounded-full" />
+                    )}
+                  </div>
+
+                  {gifError && (
+                    <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">{gifError}</div>
+                  )}
+
+                  <div className="mt-3 grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-[50vh] overflow-y-auto pr-1">
+                    {gifItems.map((it) => (
+                      <button
+                        key={it.url}
+                        type="button"
+                        className="aspect-square rounded-2xl overflow-hidden bg-gray-50 dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 hover:opacity-90 transition-opacity"
+                        onClick={async () => {
+                          await sendImageMessage(it.url);
+                          setShowMediaPicker(false);
+                        }}
+                      >
+                        <img
+                          src={it.previewUrl}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          alt="GIF"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3">
+                  <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-2">{t('stickers')}</div>
+                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 max-h-[50vh] overflow-y-auto pr-1">
+                    {STICKERS.map((url) => (
+                      <button
+                        key={url}
+                        type="button"
+                        className="aspect-square rounded-2xl overflow-hidden bg-white dark:bg-zinc-950 border border-gray-100 dark:border-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-900 transition-colors"
+                        onClick={async () => {
+                          await sendImageMessage(url);
+                          setShowMediaPicker(false);
+                        }}
+                      >
+                        <img src={url} className="w-full h-full object-contain p-2" alt="Sticker" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {!isAtBottom && messages.length > 6 && (
         <button
           onClick={() => {
