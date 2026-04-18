@@ -12,12 +12,12 @@ importScripts('https://www.gstatic.com/firebasejs/12.11.0/firebase-messaging-com
 
 // TODO: replace with your firebase config (same values as firebase-applet-config.json).
 firebase.initializeApp({
-  apiKey: 'REPLACE_ME',
-  authDomain: 'REPLACE_ME',
-  projectId: 'REPLACE_ME',
-  storageBucket: 'REPLACE_ME',
-  messagingSenderId: 'REPLACE_ME',
-  appId: 'REPLACE_ME',
+  apiKey: 'AIzaSyANZPuiuoRZUNieYLBDh9HkKuM7Tv8S2Ws',
+  authDomain: 'zimo-554fd.firebaseapp.com',
+  projectId: 'zimo-554fd',
+  storageBucket: 'zimo-554fd.appspot.com',
+  messagingSenderId: '795043346925',
+  appId: '1:795043346925:web:a0a8962383ae28d08e8fe4',
 });
 
 const messaging = firebase.messaging();
@@ -37,4 +37,3 @@ self.addEventListener('notificationclick', (event) => {
   const url = event.notification?.data?.url || '/';
   event.waitUntil(clients.openWindow(url));
 });
-

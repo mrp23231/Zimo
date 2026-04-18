@@ -1000,7 +1000,7 @@ const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: num
   });
 };
 
-type TenorGifItem = { url: string; previewUrl: string };
+type TenorGifItem = { id: string; url: string; previewUrl: string; q?: string };
 
 const fetchTenorGifs = async (t: (key: TranslationKey) => string, query: string, limitCount: number) => {
   const key = import.meta.env.VITE_TENOR_API_KEY || '';
@@ -1022,15 +1022,29 @@ const fetchTenorGifs = async (t: (key: TranslationKey) => string, query: string,
   const results = Array.isArray(json?.results) ? json.results : [];
   const items = results
     .map((r: any) => {
+      const id = String(r?.id || '');
       const fm = r?.media_formats || r?.media || {};
       const full = fm.gif?.url || fm.mediumgif?.url || fm.tinygif?.url || '';
       const prev = fm.tinygif?.url || fm.nanogif?.url || full || '';
-      if (!full) return null;
-      return { url: full, previewUrl: prev || full };
+      if (!id || !full) return null;
+      return { id, url: full, previewUrl: prev || full, q: q || undefined };
     })
     .filter(Boolean) as TenorGifItem[];
   if (items.length === 0) throw new Error('tenor_no_results');
   return items;
+};
+
+const registerTenorShare = async (gif: TenorGifItem) => {
+  const key = import.meta.env.VITE_TENOR_API_KEY || '';
+  if (!key) return;
+  const params = new URLSearchParams();
+  params.set('id', gif.id);
+  params.set('key', key);
+  params.set('client_key', 'zimo');
+  if (gif.q) params.set('q', gif.q);
+  const url = `https://tenor.googleapis.com/v2/registershare?${params.toString()}`;
+  // Fire-and-forget. This is optional but improves Tenor search quality.
+  fetch(url).catch(() => {});
 };
 
 const dataUrlToBlob = async (dataUrl: string) => {
@@ -1105,7 +1119,7 @@ const getStorageErrorMessage = (error: unknown, t: (key: TranslationKey) => stri
     case 'storage/canceled':
       return t('storageCanceled');
     default:
-      return t('genericError');
+      return code ? `${t('genericError')} (${code})` : t('genericError');
   }
 };
 
@@ -3067,7 +3081,9 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 
   const handlePost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!content.trim() || !profile || uploading) return;
+    const trimmed = content.trim();
+    const images = imageUrls.filter(url => url.trim() !== '');
+    if ((!trimmed && images.length === 0) || !profile || uploading) return;
 
     try {
       const postRef = await addDoc(collection(db, 'posts'), {
@@ -3075,8 +3091,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
         authorUsername: profile.username ? normalizeUsername(profile.username) : '',
-        content: content.trim(),
-        imageUrls: imageUrls.filter(url => url.trim() !== ''),
+        content: trimmed,
+        imageUrls: images,
         createdAt: serverTimestamp(),
         likes: 0,
         likedBy: []
@@ -3142,7 +3158,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   }, [showGifPicker, gifQuery]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+    const input = e.currentTarget;
+    const files = input.files;
     if (!files || files.length === 0 || !profile) return;
 
     setUploading(true);
@@ -3223,6 +3240,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     } finally {
       setUploading(false);
       setUploadProgress(0);
+      // Allow picking the same file again.
+      input.value = '';
     }
   };
 
@@ -3424,7 +3443,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             <div className="flex justify-end">
             <button 
               type="submit"
-              disabled={!content.trim() || uploading}
+              disabled={(!content.trim() && imageUrls.length === 0) || uploading}
               className="bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-full font-medium disabled:opacity-50 transition-opacity"
             >
               {uploading ? t('uploading') : t('post')}
@@ -3489,6 +3508,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                         type="button"
                         className="aspect-square rounded-2xl overflow-hidden bg-gray-50 dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 hover:opacity-90 transition-opacity"
                         onClick={() => {
+                          registerTenorShare(it);
                           setImageUrls(prev => [...prev, it.url]);
                           setShowGifPicker(false);
                         }}
@@ -6122,6 +6142,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                         type="button"
                         className="aspect-square rounded-2xl overflow-hidden bg-gray-50 dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 hover:opacity-90 transition-opacity"
                         onClick={async () => {
+                          registerTenorShare(it);
                           await sendImageMessage(it.url);
                           setShowMediaPicker(false);
                         }}

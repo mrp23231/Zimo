@@ -1,0 +1,17 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // MVP rules for this app:
+    // - only signed-in users can read/write
+    // Tighten later (per-user paths, size limits, content-type constraints).
+    match /{allPaths=**} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}
+
