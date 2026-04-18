@@ -79,14 +79,14 @@ service cloud.firestore {
       return !('hiddenFrom' in data) || !(data.hiddenFrom is list) || !data.hiddenFrom.hasAny([request.auth.uid]);
     }
 
+    function hasMedia(data) {
+      return (('imageUrls' in data) && (data.imageUrls is list) && data.imageUrls.size() > 0) ||
+             (('imageUrl' in data) && (data.imageUrl is string) && data.imageUrl.size() > 0);
+    }
+
     function isValidPost(data) {
       // Allow posts with either non-empty text OR media (imageUrls/imageUrl).
       // This matches the app UX where a user can publish "photo-only" posts.
-      function hasMedia(d) {
-        return (('imageUrls' in d) && (d.imageUrls is list) && d.imageUrls.size() > 0) ||
-               (('imageUrl' in d) && (d.imageUrl is string) && d.imageUrl.size() > 0);
-      }
-
       return data.keys().hasAll(['authorUid', 'authorName', 'content', 'createdAt', 'likes', 'likedBy']) &&
              data.authorUid == request.auth.uid &&
              data.content is string && data.content.size() <= 1000 &&
