@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
+import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from 'react';
 import { 
   signInWithPopup, 
   GoogleAuthProvider, 
@@ -73,7 +73,8 @@ import {
   Repeat,
   Edit3,
   Smile,
-  WifiOff
+  WifiOff,
+  Pin
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
@@ -192,6 +193,107 @@ const MESSAGE_REACTIONS = [
   { key: 'wow', emoji: '😮' },
 ];
 
+const BOOKMARK_QUERY_CHUNK = 10;
+const SEARCH_POST_LIMIT = 50;
+const TYPING_TTL_MS = 2500;
+const TYPING_PING_INTERVAL_MS = 1200;
+
+const chunkItems = <T,>(items: T[], size: number) => {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
+
+const mergeUniqueUsers = (users: UserProfile[]) =>
+  users.reduce<UserProfile[]>((acc, user) => {
+    if (!acc.find(existing => existing.uid === user.uid)) {
+      acc.push(user);
+    }
+    return acc;
+  }, []);
+
+const normalizeSearchText = (value: string) => normalizeUsername(value).trim().toLowerCase();
+
+const matchesPostSearch = (post: Post, value: string) => {
+  const query = normalizeSearchText(value);
+  if (!query) return false;
+  const authorHandle = normalizeUsername(post.authorUsername || '').toLowerCase();
+  const fields = [
+    post.content,
+    post.authorName,
+    authorHandle
+  ].filter(Boolean).map(entry => entry.toLowerCase());
+  return fields.some(entry => entry.includes(query));
+};
+
+const buildCommentTree = (comments: Comment[]) => {
+  const nodes = new Map<string, CommentNode>();
+  comments.forEach(comment => {
+    nodes.set(comment.id, { ...comment, children: [] });
+  });
+
+  const roots: CommentNode[] = [];
+  comments.forEach(comment => {
+    const node = nodes.get(comment.id);
+    if (!node) return;
+    if (comment.parentId) {
+      const parent = nodes.get(comment.parentId);
+      if (parent) {
+        parent.children.push(node);
+        return;
+      }
+    }
+    roots.push(node);
+  });
+
+  return roots;
+};
+
+const DEFAULT_LONG_COMMENT_BRANCH_DESCENDANTS = 8;
+
+const buildCommentDescendantCountMap = (nodes: CommentNode[]) => {
+  const byId = new Map<string, number>();
+  const visit = (node: CommentNode): number => {
+    let total = 0;
+    for (const child of node.children) {
+      total += 1 + visit(child);
+    }
+    byId.set(node.id, total);
+    return total;
+  };
+  nodes.forEach(visit);
+  return byId;
+};
+
+const collectLongCommentBranchIds = (
+  nodes: CommentNode[],
+  descendantCountById: Map<string, number>,
+  threshold: number
+) => {
+  const ids: string[] = [];
+  const visit = (node: CommentNode) => {
+    const descendants = descendantCountById.get(node.id) ?? 0;
+    if (descendants >= threshold) ids.push(node.id);
+    node.children.forEach(visit);
+  };
+  nodes.forEach(visit);
+  return ids;
+};
+
+const collectCommentBranchIds = (comments: Comment[], rootId: string) => {
+  const ids = new Set<string>();
+  const visit = (parentId: string) => {
+    ids.add(parentId);
+    comments
+      .filter(comment => comment.parentId === parentId)
+      .forEach(child => visit(child.id));
+  };
+  visit(rootId);
+  return Array.from(ids);
+};
+
 // --- Types ---
 
 interface UserProfile {
@@ -217,6 +319,7 @@ interface UserProfile {
   lastSeen?: Timestamp;
   blockedUsers?: string[];
   isPrivate?: boolean;
+  pinnedPostIds?: string[];
 }
 
 interface Follow {
@@ -241,6 +344,10 @@ interface Post {
   likedBy: string[];
   repostId?: string;
   repostCount?: number;
+}
+
+interface CommentNode extends Comment {
+  children: CommentNode[];
 }
 
 interface Notification {
@@ -290,7 +397,10 @@ type Language = 'en' | 'ru';
 const translations = {
   en: {
     searchUsers: 'Search users...',
+    searchEverything: 'Search people and posts...',
+    searchPosts: 'Posts',
     noUsersFound: 'No users found',
+    noPostsFound: 'No posts found',
     feed: 'Feed',
     explore: 'Explore',
     notifications: 'Notifications',
@@ -406,6 +516,8 @@ const translations = {
     replyPlaceholder: 'Write a reply...',
     reply: 'Reply',
     delete: 'Delete',
+    collapseThread: 'Collapse thread',
+    expandThread: 'Expand thread ({count})',
     confirmDeleteComment: 'Delete this comment?',
     replyingTo: 'Replying to',
     commentsTitle: 'Comments ({count})',
@@ -427,6 +539,13 @@ const translations = {
     bookmarkAdded: 'Added to bookmarks',
     bookmarkRemoved: 'Removed from bookmarks',
     bookmarkFailed: 'Failed to bookmark',
+    bookmarkAccessLimited: 'Some saved posts are hidden because access changed',
+    pinnedPosts: 'Pinned posts',
+    pinPost: 'Pin post',
+    unpinPost: 'Unpin post',
+    pinnedPostAdded: 'Post pinned to profile',
+    pinnedPostRemoved: 'Post removed from pinned',
+    pinLimitReached: 'You can pin up to 3 posts',
     repostConfirm: 'Repost this post?',
     reposted: 'Post reposted!',
     quoteReposted: 'Quote reposted!',
@@ -472,6 +591,7 @@ const translations = {
     followRequestMessage: 'wants to follow you',
     followApproved: 'Follow request approved',
     followRejected: 'Follow request rejected',
+    requested: 'Requested',
     approve: 'Approve',
     reject: 'Reject',
     repostMessage: 'reposted your post',
@@ -516,7 +636,10 @@ const translations = {
   },
   ru: {
     searchUsers: 'Поиск пользователей...',
+    searchEverything: 'Поиск людей и постов...',
+    searchPosts: 'Посты',
     noUsersFound: 'Пользователи не найдены',
+    noPostsFound: 'Посты не найдены',
     feed: 'Лента',
     explore: 'Обзор',
     notifications: 'Уведомления',
@@ -633,6 +756,8 @@ const translations = {
     commentsTitle: 'Комментарии ({count})',
     reply: 'Ответить',
     delete: 'Удалить',
+    collapseThread: 'Свернуть ветку',
+    expandThread: 'Развернуть ветку ({count})',
     confirmDeleteComment: 'Удалить этот комментарий?',
     replyingTo: 'Ответ на',
     cancelReply: 'Отменить ответ',
@@ -653,6 +778,13 @@ const translations = {
     bookmarkAdded: 'Добавлено в закладки',
     bookmarkRemoved: 'Удалено из закладок',
     bookmarkFailed: 'Не удалось добавить в закладки',
+    bookmarkAccessLimited: 'Часть сохранённых постов скрыта из-за ограничений доступа',
+    pinnedPosts: 'Закреплённые посты',
+    pinPost: 'Закрепить пост',
+    unpinPost: 'Открепить пост',
+    pinnedPostAdded: 'Пост закреплён в профиле',
+    pinnedPostRemoved: 'Пост убран из закрепа',
+    pinLimitReached: 'Можно закрепить не больше 3 постов',
     repostConfirm: 'Сделать репост?',
     reposted: 'Репост опубликован!',
     quoteReposted: 'Цитата опубликована!',
@@ -698,6 +830,7 @@ const translations = {
     followRequestMessage: 'хочет подписаться',
     followApproved: 'Подписка одобрена',
     followRejected: 'Подписка отклонена',
+    requested: 'Запрошено',
     approve: 'Принять',
     reject: 'Отклонить',
     repostMessage: 'сделал репост вашего поста',
@@ -1125,6 +1258,145 @@ const useAuth = () => {
   return context;
 };
 
+function CommentThread({
+  nodes,
+  level = 0,
+  postAuthorUid,
+  currentUid,
+  replyTargetId,
+  descendantCountById,
+  collapsedBranches,
+  onToggleBranch,
+  longBranchThreshold = DEFAULT_LONG_COMMENT_BRANCH_DESCENDANTS,
+  onReply,
+  onDelete,
+  onLike,
+  t,
+}: {
+  nodes: CommentNode[];
+  level?: number;
+  postAuthorUid: string;
+  currentUid?: string;
+  replyTargetId: string | null;
+  descendantCountById: Map<string, number>;
+  collapsedBranches?: Record<string, boolean>;
+  onToggleBranch?: (commentId: string) => void;
+  longBranchThreshold?: number;
+  onReply: (comment: Comment) => void;
+  onDelete: (commentId: string) => void;
+  onLike: (commentId: string, currentLikes?: number, likedBy?: string[]) => void;
+  t: (key: TranslationKey) => string;
+}) {
+  return (
+    <div className={cn("space-y-4", level > 0 && "ml-5 pl-4 border-l border-gray-100 dark:border-zinc-800")}>
+      {nodes.map((comment) => {
+        const canDelete = currentUid === comment.authorUid || currentUid === postAuthorUid;
+        const liked = (comment.likedBy || []).includes(currentUid || '');
+        const descendants = descendantCountById.get(comment.id) ?? 0;
+        const isLongBranch = descendants >= longBranchThreshold;
+        const isCollapsed = !!collapsedBranches?.[comment.id];
+
+        return (
+          <div key={comment.id} className="flex gap-3 group/comment">
+            <img src={comment.authorPhoto} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
+            <div className="flex-1 min-w-0">
+              <div className="bg-gray-50 dark:bg-zinc-800/50 p-3 rounded-2xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-xs mb-1">{comment.authorName}</div>
+                    <p className="text-sm dark:text-gray-300 whitespace-pre-wrap break-words">{comment.text}</p>
+                  </div>
+                  <span className="text-[10px] text-gray-400 whitespace-nowrap">
+                    {comment.createdAt ? formatDistanceToNow(comment.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 mt-2 flex-wrap">
+                <button
+                  onClick={() => onLike(comment.id, comment.likes || 0, comment.likedBy || [])}
+                  className={cn(
+                    "flex items-center gap-1 text-xs transition-colors",
+                    liked ? "text-red-500" : "text-gray-400 hover:text-red-500"
+                  )}
+                >
+                  <Heart size={12} fill={liked ? 'currentColor' : 'none'} />
+                  <span>{comment.likes || 0}</span>
+                </button>
+                <button
+                  onClick={() => onReply(comment)}
+                  className="text-xs text-gray-400 hover:text-blue-500 transition-colors"
+                >
+                  {t('reply')}
+                </button>
+                {isLongBranch && onToggleBranch && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleBranch(comment.id);
+                    }}
+                    className={cn(
+                      "text-xs transition-colors",
+                      isCollapsed ? "text-blue-500 hover:text-blue-600" : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    )}
+                    aria-expanded={!isCollapsed}
+                  >
+                    {isCollapsed
+                      ? t('expandThread').replace('{count}', String(descendants))
+                      : t('collapseThread')}
+                  </button>
+                )}
+                {replyTargetId === comment.id && (
+                  <span className="text-[10px] text-blue-500 uppercase tracking-widest">{t('replyingTo')}</span>
+                )}
+                {canDelete && (
+                  <button
+                    onClick={() => onDelete(comment.id)}
+                    className="text-xs text-gray-400 hover:text-red-500 transition-colors opacity-0 group-hover/comment:opacity-100"
+                  >
+                    {t('delete')}
+                  </button>
+                )}
+              </div>
+              {isLongBranch && isCollapsed && (
+                <div className="mt-3">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleBranch?.(comment.id);
+                    }}
+                    className="w-full text-left text-xs text-blue-500 hover:text-blue-600 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/50 rounded-2xl px-3 py-2"
+                  >
+                    {t('expandThread').replace('{count}', String(descendants))}
+                  </button>
+                </div>
+              )}
+              {comment.children.length > 0 && (!isLongBranch || !isCollapsed) && (
+                <div className="mt-4">
+                  <CommentThread
+                    nodes={comment.children}
+                    level={level + 1}
+                    postAuthorUid={postAuthorUid}
+                    currentUid={currentUid}
+                    replyTargetId={replyTargetId}
+                    descendantCountById={descendantCountById}
+                    collapsedBranches={collapsedBranches}
+                    onToggleBranch={onToggleBranch}
+                    longBranchThreshold={longBranchThreshold}
+                    onReply={onReply}
+                    onDelete={onDelete}
+                    onLike={onLike}
+                    t={t}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // --- Components ---
 
 function Lightbox({ url, onClose }: { url: string, onClose: () => void }) {
@@ -1167,6 +1439,8 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   const [loading, setLoading] = useState(true);
   const [userSearch, setUserSearch] = useState('');
   const [userResults, setUserResults] = useState<UserProfile[]>([]);
+  const [postResults, setPostResults] = useState<Post[]>([]);
+  const [searchablePosts, setSearchablePosts] = useState<Post[]>([]);
   const [isUserSearching, setIsUserSearching] = useState(false);
   const [privateAccountUids, setPrivateAccountUids] = useState<string[]>([]);
 
@@ -1199,8 +1473,22 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   }, [profile?.blockedUsers, privateAccountUids]);
 
   useEffect(() => {
+    const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(SEARCH_POST_LIMIT));
+    const unsubscribe = onSnapshot(q, (s) => {
+      let allPosts = s.docs.map(d => ({ id: d.id, ...d.data() } as Post));
+      if (profile?.blockedUsers?.length) {
+        allPosts = allPosts.filter(post => !profile.blockedUsers?.includes(post.authorUid));
+      }
+      allPosts = allPosts.filter(post => post.authorUid === profile?.uid || !privateAccountUids.includes(post.authorUid));
+      setSearchablePosts(allPosts);
+    });
+    return unsubscribe;
+  }, [profile?.blockedUsers, profile?.uid, privateAccountUids]);
+
+  useEffect(() => {
     if (userSearch.length < 2) {
       setUserResults([]);
+      setPostResults([]);
       return;
     }
     setUserResults([]);
@@ -1219,44 +1507,42 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
     );
     const unsubName = onSnapshot(qName, (s) => {
       const nameResults = s.docs.map(d => d.data() as UserProfile);
-      setUserResults((prev) => {
-        const merged = [...nameResults, ...prev].reduce<UserProfile[]>((acc, u) => {
-          if (!acc.find(p => p.uid === u.uid)) acc.push(u);
-          return acc;
-        }, []);
-        return merged.slice(0, 8);
-      });
+      setUserResults((prev) => mergeUniqueUsers([...nameResults, ...prev]).slice(0, 8));
     });
     const unsubUsername = onSnapshot(qUsername, (s) => {
       const userResults = s.docs.map(d => d.data() as UserProfile);
-      setUserResults((prev) => {
-        const merged = [...userResults, ...prev].reduce<UserProfile[]>((acc, u) => {
-          if (!acc.find(p => p.uid === u.uid)) acc.push(u);
-          return acc;
-        }, []);
-        return merged.slice(0, 8);
-      });
+      setUserResults((prev) => mergeUniqueUsers([...userResults, ...prev]).slice(0, 8));
     });
     return () => { unsubName(); unsubUsername(); };
   }, [userSearch]);
+
+  useEffect(() => {
+    if (userSearch.length < 2) return;
+    setPostResults(searchablePosts.filter(post => matchesPostSearch(post, userSearch)).slice(0, 6));
+  }, [searchablePosts, userSearch]);
+
+  const showSearchPanel = isUserSearching && userSearch.length >= 2;
 
   return (
     <div className="max-w-4xl mx-auto py-20 px-4">
       <h2 className="text-3xl font-bold mb-6 tracking-tight">{t('explore')}</h2>
 
-      <div className="md:hidden mb-8">
+      <div className="mb-8 relative">
         <div className="relative">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
           <input
             value={userSearch}
             onChange={(e) => setUserSearch(e.target.value)}
             onFocus={() => setIsUserSearching(true)}
-            placeholder={t('searchUsers')}
+            placeholder={t('searchEverything')}
             className="w-full bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl pl-12 pr-4 py-3 focus:outline-none focus:ring-1 focus:ring-black dark:focus:ring-white transition-all shadow-sm"
           />
         </div>
-        {isUserSearching && userSearch.length >= 2 && (
-          <div className="mt-2 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-2xl shadow-xl overflow-hidden">
+        {showSearchPanel && (
+          <div className="mt-3 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl shadow-xl overflow-hidden">
+            <div className="p-4 border-b border-gray-100 dark:border-zinc-800">
+              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">{t('searchPeople')}</div>
+            </div>
             {userResults.length > 0 ? userResults.map(u => (
               <button
                 key={u.uid}
@@ -1275,6 +1561,31 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
               </button>
             )) : (
               <div className="p-4 text-center text-xs text-gray-400">{t('noUsersFound')}</div>
+            )}
+            <div className="p-4 border-y border-gray-100 dark:border-zinc-800 bg-gray-50/70 dark:bg-zinc-950/60">
+              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">{t('searchPosts')}</div>
+            </div>
+            {postResults.length > 0 ? postResults.map(post => (
+              <button
+                key={post.id}
+                onClick={() => {
+                  onOpenPost(post);
+                  setUserSearch('');
+                  setIsUserSearching(false);
+                }}
+                className="w-full p-4 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
+              >
+                <div className="flex items-center gap-3 mb-2">
+                  <img src={post.authorPhoto} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold truncate">{post.authorName}</div>
+                    <div className="text-[10px] text-gray-400 truncate">{formatUsername(post.authorUsername)}</div>
+                  </div>
+                </div>
+                <div className="text-sm text-gray-600 dark:text-gray-300 line-clamp-2">{post.content}</div>
+              </button>
+            )) : (
+              <div className="p-4 text-center text-xs text-gray-400">{t('noPostsFound')}</div>
             )}
           </div>
         )}
@@ -1334,6 +1645,7 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 }) {
   const { profile } = useAuth();
   const { t } = useSettings();
+  const { showToast } = useToast();
   const [bookmarkedPosts, setBookmarkedPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -1344,13 +1656,42 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
       return;
     }
 
-    const q = query(collection(db, 'posts'), where('__name__', 'in', profile.bookmarks));
-    const unsubscribe = onSnapshot(q, (s) => {
-      setBookmarkedPosts(s.docs.map(d => ({ id: d.id, ...d.data() } as Post)));
-      setLoading(false);
+    setLoading(true);
+    const bookmarkOrder = profile.bookmarks;
+    const chunks = chunkItems(bookmarkOrder, BOOKMARK_QUERY_CHUNK);
+    const byId = new Map<string, Post>();
+    const initializedChunks = new Set<number>();
+    let reportedHiddenPosts = false;
+
+    const syncPosts = () => {
+      const ordered = bookmarkOrder
+        .map(id => byId.get(id))
+        .filter((post): post is Post => Boolean(post));
+      setBookmarkedPosts(ordered);
+      const ready = initializedChunks.size === chunks.length;
+      setLoading(!ready);
+      if (ready && !reportedHiddenPosts && ordered.length < bookmarkOrder.length) {
+        showToast(t('bookmarkAccessLimited'), 'info');
+        reportedHiddenPosts = true;
+      }
+    };
+
+    const unsubscribers = chunks.map((ids, index) => {
+      const q = query(collection(db, 'posts'), where('__name__', 'in', ids));
+      return onSnapshot(q, (s) => {
+        ids.forEach(id => byId.delete(id));
+        s.docs.forEach(d => {
+          byId.set(d.id, { id: d.id, ...d.data() } as Post);
+        });
+        initializedChunks.add(index);
+        syncPosts();
+      });
     });
-    return unsubscribe;
-  }, [profile]);
+
+    return () => {
+      unsubscribers.forEach(unsub => unsub());
+    };
+  }, [profile?.bookmarks, showToast, t]);
 
   return (
     <div className="max-w-xl mx-auto py-20 px-4">
@@ -1385,8 +1726,9 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }) {
   const { profile } = useAuth();
   const { t } = useSettings();
+  const { showToast } = useToast();
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [followingUids, setFollowingUids] = useState<string[]>([]);
+  const [connectedUids, setConnectedUids] = useState<string[]>([]);
 
   useEffect(() => {
     if (!profile) return;
@@ -1399,32 +1741,35 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
 
     const qFollows = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
     const unsubFollows = onSnapshot(qFollows, (s) => {
-      const approved = s.docs
+      const existing = s.docs
         .map(d => d.data() as Follow)
-        .filter(f => f.status === 'approved')
+        .filter(f => f.status !== 'rejected')
         .map(f => f.followingUid);
-      setFollowingUids(approved);
+      setConnectedUids(existing);
     });
 
     return () => { unsubUsers(); unsubFollows(); };
   }, [profile]);
 
   const suggestions = users
-    .filter(u => !followingUids.includes(u.uid))
+    .filter(u => !connectedUids.includes(u.uid))
     .slice(0, 3);
 
   if (suggestions.length === 0) return null;
 
   const handleFollow = async (targetUid: string) => {
     if (!profile) return;
+    const targetUser = users.find(user => user.uid === targetUid);
+    const status = targetUser?.isPrivate ? 'pending' : 'approved';
     await setDoc(doc(db, 'follows', profile.uid + '_' + targetUid), {
       followerUid: profile.uid,
       followingUid: targetUid,
+      status,
       createdAt: serverTimestamp()
     });
     
     await addDoc(collection(db, 'notifications'), {
-      type: 'follow',
+      type: targetUser?.isPrivate ? 'follow_request' : 'follow',
       fromUid: profile.uid,
       fromName: profile.displayName,
       fromPhoto: profile.photoURL,
@@ -1432,6 +1777,7 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
       createdAt: serverTimestamp(),
       read: false
     });
+    showToast(targetUser?.isPrivate ? t('followRequested') : t('followingBtn'), 'success');
   };
 
   return (
@@ -1708,13 +2054,16 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
   );
 }
 
-function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, onShowLikes }: { 
+function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, onShowLikes, canPin = false, isPinned = false, onTogglePin }: { 
   post: Post, 
   onOpen?: (post: Post) => void, 
   onOpenProfile?: (uid: string) => void, 
   onHashtagClick?: (tag: string) => void, 
   onOpenImage?: (url: string) => void,
   onShowLikes?: (postId: string) => void,
+  canPin?: boolean,
+  isPinned?: boolean,
+  onTogglePin?: (post: Post) => void,
   key?: string 
 }) {
   const { profile } = useAuth();
@@ -1729,8 +2078,12 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   const [showRepostDialog, setShowRepostDialog] = useState(false);
   const [repostText, setRepostText] = useState('');
   const [isReposting, setIsReposting] = useState(false);
+  const [replyTo, setReplyTo] = useState<Comment | null>(null);
   const isLiked = post.likedBy?.includes(profile?.uid || '');
   const isBookmarked = profile?.bookmarks?.includes(post.id);
+  const commentTree = buildCommentTree(comments);
+  const commentDescendantCountById = useMemo(() => buildCommentDescendantCountMap(commentTree), [commentTree]);
+  const [collapsedCommentBranches, setCollapsedCommentBranches] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!showComments) return;
@@ -1740,6 +2093,31 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     });
     return unsubscribe;
   }, [showComments, post.id]);
+
+  useEffect(() => {
+    if (!showComments) return;
+    const longBranchIds = collectLongCommentBranchIds(
+      commentTree,
+      commentDescendantCountById,
+      DEFAULT_LONG_COMMENT_BRANCH_DESCENDANTS
+    );
+    if (longBranchIds.length === 0) return;
+    setCollapsedCommentBranches(prev => {
+      let changed = false;
+      const next: Record<string, boolean> = { ...prev };
+      for (const id of longBranchIds) {
+        if (next[id] === undefined) {
+          next[id] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [showComments, commentTree, commentDescendantCountById]);
+
+  const toggleCommentBranch = (commentId: string) => {
+    setCollapsedCommentBranches(prev => ({ ...prev, [commentId]: !prev[commentId] }));
+  };
 
   useEffect(() => {
     if (!post.repostId) return;
@@ -1826,12 +2204,12 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       };
       // Add parentId if replying
       if (replyTo) {
-        commentData.parentId = replyTo;
+        commentData.parentId = replyTo.id;
       }
       await addDoc(collection(db, 'posts', post.id, 'comments'), commentData);
       
       // Create notification
-      const notifyUid = replyTo ? comments.find(c => c.id === replyTo)?.authorUid : post.authorUid;
+      const notifyUid = replyTo?.authorUid || post.authorUid;
       if (notifyUid && notifyUid !== profile.uid) {
         await addDoc(collection(db, 'notifications'), {
           type: 'comment',
@@ -1877,16 +2255,17 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   };
 
   const handleDeleteComment = async (commentId: string) => {
+    if (!window.confirm(t('confirmDeleteComment'))) return;
     try {
-      await deleteDoc(doc(db, 'posts', post.id, 'comments', commentId));
+      const idsToDelete = collectCommentBranchIds(comments, commentId);
+      await Promise.all(idsToDelete.map(id => deleteDoc(doc(db, 'posts', post.id, 'comments', id))));
       showToast(t('commentDeleted'), "info");
     } catch (err) {
       showToast(t('commentDeleteFailed'), "error");
     }
   };
-  const [replyTo, setReplyTo] = useState<string | null>(null);
-  const handleReply = (commentId: string) => {
-    setReplyTo(commentId);
+  const handleReply = (comment: Comment) => {
+    setReplyTo(comment);
   };
 
   const handleCommentLike = async (commentId: string, currentLikes: number = 0, likedBy: string[] = []) => {
@@ -2023,9 +2402,16 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       onClick={() => !isEditing && onOpen?.(post)}
       className={cn(
         "bg-white dark:bg-zinc-900 p-4 sm:p-5 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-sm group transition-all",
+        isPinned && "ring-1 ring-yellow-200 dark:ring-yellow-800",
         onOpen && !isEditing ? "hover:border-gray-300 dark:hover:border-zinc-600 cursor-pointer" : ""
       )}
     >
+      {isPinned && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-yellow-600 dark:text-yellow-400">
+          <Pin size={14} fill="currentColor" />
+          <span className="font-bold uppercase tracking-widest">{t('pinnedPosts')}</span>
+        </div>
+      )}
       {post.repostId && (
         <div className="mb-3 flex items-center gap-2 text-xs text-gray-400">
           <Repeat size={14} />
@@ -2050,6 +2436,23 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         </button>
         {profile?.uid === post.authorUid ? (
           <div className="flex gap-1">
+            {canPin && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTogglePin?.(post);
+                }}
+                className={cn(
+                  "p-2 transition-all rounded-full",
+                  isPinned
+                    ? "text-yellow-500 bg-yellow-50 dark:bg-yellow-900/20"
+                    : "text-gray-300 hover:text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-900/20"
+                )}
+                title={isPinned ? t('unpinPost') : t('pinPost')}
+              >
+                <Pin size={16} fill={isPinned ? 'currentColor' : 'none'} />
+              </button>
+            )}
             <button 
               onClick={(e) => { e.stopPropagation(); setIsEditing(!isEditing); }} 
               className="p-2 text-gray-300 hover:text-blue-500 transition-all rounded-full hover:bg-blue-50 dark:hover:bg-blue-900/20"
@@ -2211,46 +2614,36 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
             className="overflow-hidden"
           >
             <div className="mt-4 pt-4 border-t dark:border-zinc-800 space-y-4">
-              {comments.filter(c => !c.parentId).map(comment => (
-                <div key={comment.id} className="flex gap-3 group/comment">
-                  <img src={comment.authorPhoto} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
-                  <div className="flex-1 relative">
-                    <div className="bg-gray-50 dark:bg-zinc-800/50 p-3 rounded-2xl">
-                      <div className="font-semibold text-xs mb-1">{comment.authorName}</div>
-                      <p className="text-sm dark:text-gray-300">{comment.text}</p>
-                    </div>
-                    <div className="flex items-center gap-3 mt-1">
-                      <button 
-                        onClick={() => handleCommentLike(comment.id, comment.likes || 0, comment.likedBy || [])}
-                        className={`flex items-center gap-1 text-xs ${(comment.likedBy || []).includes(profile?.uid || '') ? 'text-red-500' : 'text-gray-400 hover:text-red-500'}`}
-                      >
-                        <Heart size={12} fill={(comment.likedBy || []).includes(profile?.uid || '') ? 'currentColor' : 'none'} />
-                        <span>{comment.likes || 0}</span>
-                      </button>
-                      <button 
-                        onClick={() => handleReply(comment.id)}
-                        className="text-xs text-gray-400 hover:text-blue-500"
-                      >
-                        {t('reply')}
-                      </button>
-                    </div>
-                    {(profile?.uid === comment.authorUid || profile?.uid === post.authorUid) && (
-                      <button 
-                        onClick={() => handleDeleteComment(comment.id)}
-                        className="absolute -right-2 -top-2 p-1.5 bg-white dark:bg-zinc-800 border border-gray-100 dark:border-zinc-700 rounded-full text-gray-400 hover:text-red-500 opacity-0 group-hover/comment:opacity-100 transition-all shadow-sm"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </div>
+              {commentTree.length > 0 ? (
+                <CommentThread
+                  nodes={commentTree}
+                  postAuthorUid={post.authorUid}
+                  currentUid={profile?.uid}
+                  replyTargetId={replyTo?.id || null}
+                  descendantCountById={commentDescendantCountById}
+                  collapsedBranches={collapsedCommentBranches}
+                  onToggleBranch={toggleCommentBranch}
+                  onReply={handleReply}
+                  onDelete={handleDeleteComment}
+                  onLike={handleCommentLike}
+                  t={t}
+                />
+              ) : (
+                <div className="text-center py-6 text-sm text-gray-400">{t('noComments')}</div>
+              )}
+
+              {replyTo && (
+                <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 dark:bg-zinc-800 p-2 rounded-full">
+                  <span>{t('replyingTo')}</span>
+                  <span className="font-bold">{replyTo.authorName}</span>
+                  <button type="button" onClick={() => setReplyTo(null)} className="ml-1 text-gray-400 hover:text-gray-600">×</button>
                 </div>
-              ))}
-              
+              )}
               <form onSubmit={handleComment} className="flex gap-2 mt-4">
                 <input
                   value={commentText}
                   onChange={(e) => setCommentText(e.target.value)}
-                  placeholder={t('commentPlaceholder')}
+                  placeholder={replyTo ? t('replyPlaceholder') : t('commentPlaceholder')}
                   className="flex-1 bg-gray-50 dark:bg-zinc-800 rounded-full px-4 py-2 text-sm focus:outline-none"
                 />
                 <button type="submit" disabled={!commentText.trim()} className="p-2 text-black dark:text-white disabled:opacity-30">
@@ -2396,8 +2789,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
       }
 
-      // In 'all' tab: show all posts from public accounts
-      if (feedTab === 'all') {
+      // In 'global' tab: show all posts from public accounts
+      if (feedTab === 'global') {
         allPosts = allPosts.filter(p => {
           // Always show own posts
           if (p.authorUid === profile?.uid) return true;
@@ -2754,6 +3147,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   });
   const [stats, setStats] = useState({ followers: 0, following: 0 });
   const [isFollowing, setIsFollowing] = useState(false);
+  const [followRequested, setFollowRequested] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarProgress, setAvatarProgress] = useState(0);
@@ -2802,8 +3196,11 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     const followingQ = query(collection(db, 'follows'), where('followerUid', '==', effectiveUid));
     
     const unsubFollowing = onSnapshot(followingQ, (s) => {
-      setStats(prev => ({ ...prev, following: s.size }));
-      const uids = s.docs.map(d => (d.data() as Follow).followingUid);
+      const approvedFollows = s.docs
+        .map(d => d.data() as Follow)
+        .filter(f => f.status === 'approved');
+      setStats(prev => ({ ...prev, following: approvedFollows.length }));
+      const uids = approvedFollows.map(f => f.followingUid);
       if (uids.length > 0) {
         const q = query(collection(db, 'users'), where('uid', 'in', uids.slice(0, 10)));
         getDocs(q).then(snap => setFollowingProfiles(snap.docs.map(d => d.data() as UserProfile)));
@@ -2813,8 +3210,11 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     });
 
     const unsubFollowers = onSnapshot(followersQ, (s) => {
-      setStats(prev => ({ ...prev, followers: s.size }));
-      const uids = s.docs.map(d => (d.data() as Follow).followerUid);
+      const approvedFollowers = s.docs
+        .map(d => d.data() as Follow)
+        .filter(f => f.status === 'approved');
+      setStats(prev => ({ ...prev, followers: approvedFollowers.length }));
+      const uids = approvedFollowers.map(f => f.followerUid);
       if (uids.length > 0) {
         const q = query(collection(db, 'users'), where('uid', 'in', uids.slice(0, 10)));
         getDocs(q).then(snap => setFollowerProfiles(snap.docs.map(d => d.data() as UserProfile)));
@@ -2828,11 +3228,11 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       const unsubFollowStatus = onSnapshot(followRef, (doc) => {
         if (!doc.exists()) {
           setIsFollowing(false);
+          setFollowRequested(false);
         } else {
-          const data = doc.data();
-          // For private accounts, need approved status to be following
-          const isApproved = data?.status === 'approved' || !targetProfile?.isPrivate;
-          setIsFollowing(isApproved);
+          const data = doc.data() as Follow;
+          setIsFollowing(data?.status === 'approved');
+          setFollowRequested(data?.status === 'pending');
         }
       });
       return () => {
@@ -2968,7 +3368,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const handleFollow = async () => {
     if (!currentProfile || !effectiveUid) return;
     const followId = currentProfile.uid + '_' + effectiveUid;
-    if (isFollowing) {
+    if (isFollowing || followRequested) {
       await deleteDoc(doc(db, 'follows', followId));
     } else {
       // If target account is private, create a pending request instead of direct follow
@@ -3043,6 +3443,31 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   ].filter(Boolean);
   const usernameDisplay = formatUsername(targetProfile.username);
   const emailDisplay = getEmailDisplay(targetProfile, currentProfile?.uid, t);
+  const pinnedPosts = (targetProfile.pinnedPostIds || [])
+    .map(id => userPosts.find(post => post.id === id))
+    .filter((post): post is Post => Boolean(post));
+  const regularPosts = userPosts.filter(post => !targetProfile.pinnedPostIds?.includes(post.id));
+
+  const handleTogglePinnedPost = async (post: Post) => {
+    if (!currentProfile || currentProfile.uid !== post.authorUid) return;
+    const currentPinned = targetProfile?.pinnedPostIds || [];
+    const isCurrentlyPinned = currentPinned.includes(post.id);
+    if (!isCurrentlyPinned && currentPinned.length >= 3) {
+      showToast(t('pinLimitReached'), 'info');
+      return;
+    }
+    const nextPinned = isCurrentlyPinned
+      ? currentPinned.filter(id => id !== post.id)
+      : [post.id, ...currentPinned].slice(0, 3);
+
+    try {
+      await updateDoc(doc(db, 'users', currentProfile.uid), { pinnedPostIds: nextPinned });
+      setTargetProfile(prev => prev ? { ...prev, pinnedPostIds: nextPinned } : null);
+      showToast(isCurrentlyPinned ? t('pinnedPostRemoved') : t('pinnedPostAdded'), 'success');
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    }
+  };
 
   return (
     <div className="max-w-xl mx-auto py-20 px-4">
@@ -3171,10 +3596,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   "px-8 py-2 rounded-full font-bold transition-all",
                   isFollowing 
                     ? "bg-gray-100 dark:bg-zinc-800 text-black dark:text-white border border-gray-200 dark:border-zinc-700" 
+                    : followRequested
+                      ? "bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
                     : "bg-black dark:bg-white text-white dark:text-black"
                 )}
               >
-                {isFollowing ? t('followingBtn') : t('follow')}
+                {isFollowing ? t('followingBtn') : followRequested ? t('requested') : t('follow')}
               </button>
               <button 
                 onClick={handleBlock}
@@ -3253,7 +3680,26 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 <div className="text-sm">{t('privateAccountHint')}</div>
               </div>
             )}
-            {userPosts.filter(p => isOwnProfile || !targetProfile?.isPrivate || isFollowing).map(post => (
+            {(isOwnProfile || !targetProfile?.isPrivate || isFollowing) && pinnedPosts.length > 0 && (
+              <div className="space-y-4">
+                <div className="text-[10px] text-gray-400 uppercase tracking-[0.24em]">{t('pinnedPosts')}</div>
+                {pinnedPosts.map(post => (
+                  <PostCard 
+                    key={post.id} 
+                    post={post} 
+                    onOpen={onOpenPost} 
+                    onOpenProfile={onBack ? (uid) => onOpenProfile?.(uid) : undefined} 
+                    onHashtagClick={onHashtagClick}
+                    onOpenImage={onOpenImage}
+                    onShowLikes={onShowLikes}
+                    canPin={isOwnProfile}
+                    isPinned={true}
+                    onTogglePin={handleTogglePinnedPost}
+                  />
+                ))}
+              </div>
+            )}
+            {regularPosts.filter(p => isOwnProfile || !targetProfile?.isPrivate || isFollowing).map(post => (
               <PostCard 
                 key={post.id} 
                 post={post} 
@@ -3262,6 +3708,9 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 onHashtagClick={onHashtagClick}
                 onOpenImage={onOpenImage}
                 onShowLikes={onShowLikes}
+                canPin={isOwnProfile}
+                isPinned={!!targetProfile.pinnedPostIds?.includes(post.id)}
+                onTogglePin={handleTogglePinnedPost}
               />
             ))}
             {/* Only show no posts message if allowed to see */}
@@ -3785,6 +4234,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const messageMenuRef = useRef<HTMLDivElement | null>(null);
   const typingTimeout = useRef<number | null>(null);
+  const lastTypingPing = useRef(0);
 
   useEffect(() => {
     const unsubReceiver = onSnapshot(doc(db, 'users', receiverUid), (d) => {
@@ -3858,6 +4308,15 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
 
+  const setTypingState = (typing: boolean) => {
+    if (!profile) return;
+    updateDoc(doc(db, 'users', profile.uid), {
+      typing,
+      typingTo: typing ? receiverUid : '',
+      typingAt: serverTimestamp()
+    }).catch(console.error);
+  };
+
   const handleScroll = () => {
     const el = listRef.current;
     if (!el) return;
@@ -3888,11 +4347,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
       window.clearTimeout(typingTimeout.current);
       typingTimeout.current = null;
     }
-    updateDoc(doc(db, 'users', profile.uid), {
-      typing: false,
-      typingTo: '',
-      typingAt: serverTimestamp()
-    }).catch(console.error);
+    setTypingState(false);
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -4013,21 +4468,24 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const handleTypingChange = (value: string) => {
     setText(value);
     if (!profile) return;
-    // Use Firebase for typing (Appwrite migration issues)
-    updateDoc(doc(db, 'users', profile.uid), {
-      typing: true,
-      typingTo: receiverUid,
-      typingAt: serverTimestamp()
-    }).catch(console.error);
+    if (!value.trim()) {
+      if (typingTimeout.current) {
+        window.clearTimeout(typingTimeout.current);
+        typingTimeout.current = null;
+      }
+      setTypingState(false);
+      return;
+    }
+    const now = Date.now();
+    if (now - lastTypingPing.current > TYPING_PING_INTERVAL_MS) {
+      setTypingState(true);
+      lastTypingPing.current = now;
+    }
     if (typingTimeout.current) window.clearTimeout(typingTimeout.current);
     typingTimeout.current = window.setTimeout(() => {
-      updateDoc(doc(db, 'users', profile.uid), {
-        typing: false,
-        typingTo: '',
-        typingAt: serverTimestamp()
-      }).catch(console.error);
+      setTypingState(false);
       typingTimeout.current = null;
-    }, 2500);
+    }, TYPING_TTL_MS);
   };
 
   const pinnedMessages = messages.filter(m => m.pinned && !m.deletedForAll && !(m.deletedFor?.includes(profile?.uid || '')));
@@ -5031,6 +5489,9 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
   const [commentText, setCommentText] = useState('');
   const [likedByUsers, setLikedByUsers] = useState<UserProfile[]>([]);
   const [replyTo, setReplyTo] = useState<Comment | null>(null);
+  const commentTree = buildCommentTree(comments);
+  const commentDescendantCountById = useMemo(() => buildCommentDescendantCountMap(commentTree), [commentTree]);
+  const [collapsedCommentBranches, setCollapsedCommentBranches] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const q = query(collection(db, 'posts', post.id, 'comments'), orderBy('createdAt', 'asc'));
@@ -5039,6 +5500,30 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
     });
     return unsubscribe;
   }, [post.id]);
+
+  useEffect(() => {
+    const longBranchIds = collectLongCommentBranchIds(
+      commentTree,
+      commentDescendantCountById,
+      DEFAULT_LONG_COMMENT_BRANCH_DESCENDANTS
+    );
+    if (longBranchIds.length === 0) return;
+    setCollapsedCommentBranches(prev => {
+      let changed = false;
+      const next: Record<string, boolean> = { ...prev };
+      for (const id of longBranchIds) {
+        if (next[id] === undefined) {
+          next[id] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [commentTree, commentDescendantCountById]);
+
+  const toggleCommentBranch = (commentId: string) => {
+    setCollapsedCommentBranches(prev => ({ ...prev, [commentId]: !prev[commentId] }));
+  };
 
   useEffect(() => {
     if (!post.likedBy?.length) {
@@ -5067,7 +5552,9 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
         text: commentText.trim(),
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        likes: 0,
+        likedBy: []
       };
       
       if (replyTo) {
@@ -5093,6 +5580,31 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
       setReplyTo(null);
     } catch (err) {
       console.error("Error commenting:", err);
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    if (!window.confirm(t('confirmDeleteComment'))) return;
+    try {
+      const idsToDelete = collectCommentBranchIds(comments, commentId);
+      await Promise.all(idsToDelete.map(id => deleteDoc(doc(db, 'posts', post.id, 'comments', id))));
+    } catch (err) {
+      console.error("Error deleting comment:", err);
+    }
+  };
+
+  const handleCommentLike = async (commentId: string, currentLikes: number = 0, likedBy: string[] = []) => {
+    if (!profile) return;
+    try {
+      const isLiked = likedBy.includes(profile.uid);
+      await updateDoc(doc(db, 'posts', post.id, 'comments', commentId), {
+        likes: isLiked ? currentLikes - 1 : currentLikes + 1,
+        likedBy: isLiked
+          ? likedBy.filter(uid => uid !== profile.uid)
+          : [...likedBy, profile.uid]
+      });
+    } catch (err) {
+      console.error("Error liking comment:", err);
     }
   };
 
@@ -5165,51 +5677,24 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
         </form>
 
         <div className="space-y-4">
-          {comments.map((comment) => (
-            <div key={comment.id} className="flex gap-3 p-4 bg-white dark:bg-zinc-900 rounded-2xl border border-gray-50 dark:border-zinc-800">
-              <img src={comment.authorPhoto} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
-              <div className="flex-1">
-                <div className="flex justify-between items-center mb-1">
-                  <span className="font-bold text-xs">{comment.authorName}</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        setReplyTo(comment);
-                        document.getElementById('comment-input')?.focus();
-                      }}
-                      className="text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                    >
-                      {t('reply')}
-                    </button>
-                    {(comment.authorUid === profile?.uid || post.authorUid === profile?.uid) && (
-                      <button
-                        onClick={async () => {
-                          if (!window.confirm(t('confirmDeleteComment'))) return;
-                          await deleteDoc(doc(db, 'comments', comment.id));
-                          setComments(comments.filter(c => c.id !== comment.id));
-                        }}
-                        className="text-[10px] text-red-400 hover:text-red-600"
-                      >
-                        {t('delete')}
-                      </button>
-                    )}
-                    <span className="text-[10px] text-gray-400">
-                      {comment.createdAt ? formatDistanceToNow(comment.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
-                    </span>
-                  </div>
-                </div>
-                {replyTo?.id === comment.id && (
-                  <div className="text-xs text-gray-500 mb-2 flex items-center gap-1">
-                    <span>{t('replyingTo')} </span>
-                    <span className="font-bold">{comment.authorName}</span>
-                    <button onClick={() => setReplyTo(null)} className="ml-1 text-gray-400 hover:text-gray-600">×</button>
-                  </div>
-                )}
-                <p className="text-sm text-gray-700 dark:text-gray-300">{comment.text}</p>
-              </div>
-            </div>
-          ))}
-          {comments.length === 0 && (
+          {commentTree.length > 0 ? (
+            <CommentThread
+              nodes={commentTree}
+              postAuthorUid={post.authorUid}
+              currentUid={profile?.uid}
+              replyTargetId={replyTo?.id || null}
+              descendantCountById={commentDescendantCountById}
+              collapsedBranches={collapsedCommentBranches}
+              onToggleBranch={toggleCommentBranch}
+              onReply={(comment) => {
+                setReplyTo(comment);
+                document.getElementById('comment-input')?.focus();
+              }}
+              onDelete={handleDeleteComment}
+              onLike={handleCommentLike}
+              t={t}
+            />
+          ) : (
             <div className="text-center py-10 text-gray-400 text-sm">{t('noComments')}</div>
           )}
         </div>
