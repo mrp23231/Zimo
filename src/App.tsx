@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from 'react';
+import * as React from 'react';
+import { Component, useState, useEffect, useRef, useMemo, useCallback, createContext, useContext, type ReactNode, type ErrorInfo } from 'react';
 import { 
   signInWithPopup, 
   GoogleAuthProvider, 
@@ -32,7 +33,9 @@ import {
   arrayUnion,
   arrayRemove,
   deleteDoc,
-  getDocs
+  getDocs,
+  increment,
+  deleteField
 } from './lib/firebase';
 import { 
   ref, 
@@ -41,10 +44,10 @@ import {
   uploadBytesResumable
 } from 'firebase/storage';
 import { app, auth, db, storage } from './lib/firebase';
-import { firestore, db as awDb } from './lib/appwrite';
 import { enableWebPush, disableWebPush, attachForegroundPushListener } from './lib/push';
 
 import { cn } from './lib/utils';
+import { useOffline } from './lib/offline';
 import { 
   Home, 
   User, 
@@ -82,7 +85,10 @@ import {
   Pin,
   Copy,
   Mic,
-  Square
+  Square,
+  BarChart2,
+  BadgeCheck,
+  Shield
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
@@ -113,6 +119,24 @@ interface FirestoreErrorInfo {
       photoUrl: string | null;
     }[];
   }
+}
+
+interface UploadTask {
+  id: string;
+  file: File;
+  preview: string;
+  progress: number;
+  status: 'pending' | 'uploading' | 'completed' | 'error' | 'cancelled';
+  error?: string;
+  cancelFn?: () => void;
+}
+
+interface QueuedAction {
+  id: string;
+  type: 'create_post' | 'like' | 'comment' | 'follow' | 'delete_post' | 'update_profile';
+  data: any;
+  timestamp: number;
+  retryCount: number;
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
@@ -186,11 +210,80 @@ const getUserSecondaryLabel = (user: UserProfile, viewerUid: string | undefined,
   return email || t('emailHidden');
 };
 
+function formatMsAsCountdown(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const hh = String(hours).padStart(2, '0');
+  const mm = String(minutes).padStart(2, '0');
+  const ss = String(seconds).padStart(2, '0');
+  if (days > 0) return `${days}д ${hh}:${mm}:${ss}`;
+  return `${hh}:${mm}:${ss}`;
+}
+
+type MaintenanceNewsItem = {
+  id: string;
+  title: string;
+  excerpt: string;
+  content: string;
+};
+
+const MAINTENANCE_NEWS: MaintenanceNewsItem[] = [
+  {
+    id: 'update_1',
+    title: 'Что происходит?',
+    excerpt: 'Проводим технические работы, чтобы Zimo работал быстрее и стабильнее.',
+    content:
+      'Сейчас мы обновляем инфраструктуру и исправляем несколько редких багов.\n\nСпасибо, что ждёте — совсем скоро вернёмся.',
+  },
+  {
+    id: 'update_2',
+    title: 'Что будет после?',
+    excerpt: 'После завершения работ приложение автоматически вернётся в обычный режим.',
+    content:
+      'Когда техработы закончатся, вы снова увидите ленту, сообщения и профили как обычно.\n\nЕсли у вас открыт этот экран — нажмите «Обновить».',
+  },
+  {
+    id: 'update_3',
+    title: 'Пока ждём',
+    excerpt: 'Идеи для следующего обновления можно писать в поддержку или админу.',
+    content:
+      'Мы читаем предложения и собираем список улучшений. Напишите, чего вам не хватает: реакции, темы, поиск, приватность и т.д.',
+  },
+];
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label = 'timeout'): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(label)), ms);
+    promise.then(
+      (v) => {
+        window.clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        window.clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
 const syncUserPosts = async (uid: string, updates: Partial<Post>) => {
-  const q = query(collection(db, 'posts'), where('authorUid', '==', uid));
+  // Guardrails: syncing *all* posts can easily exceed Firestore quotas.
+  // Keep it lightweight (MVP) by updating only a limited set and sequentially.
+  const q = query(collection(db, 'posts'), where('authorUid', '==', uid), limit(50));
   const snap = await getDocs(q);
   if (snap.empty) return;
-  await Promise.all(snap.docs.map(d => updateDoc(d.ref, updates)));
+  for (const d of snap.docs) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await updateDoc(d.ref, updates);
+    } catch (e) {
+      console.error('syncUserPosts failed for', d.id, e);
+    }
+  }
 };
 
 const MESSAGE_REACTIONS = [
@@ -214,6 +307,33 @@ const chunkItems = <T,>(items: T[], size: number) => {
   return chunks;
 };
 
+const shouldStopFirestoreListen = (err: any) => {
+  const code = String(err?.code || '');
+  // failed-precondition обычно значит "нужен индекс", permission-denied — правила запрещают.
+  return code === 'failed-precondition' || code === 'permission-denied';
+};
+
+const safeOnSnapshot = <T,>(
+  refOrQuery: any,
+  onNext: (snapshot: T) => void,
+  label: string
+) => {
+  let unsub = () => {};
+  unsub = onSnapshot(
+    refOrQuery,
+    onNext as any,
+    (err) => {
+      console.error(label, err);
+      if (shouldStopFirestoreListen(err)) {
+        try {
+          unsub();
+        } catch {}
+      }
+    }
+  );
+  return unsub;
+};
+
 const mergeUniqueUsers = (users: UserProfile[]) =>
   users.reduce<UserProfile[]>((acc, user) => {
     if (!acc.find(existing => existing.uid === user.uid)) {
@@ -223,6 +343,26 @@ const mergeUniqueUsers = (users: UserProfile[]) =>
   }, []);
 
 const normalizeSearchText = (value: string) => normalizeUsername(value).trim().toLowerCase();
+
+const VerifiedBadge = ({ title, className, animate }: { title: string; className?: string; animate?: boolean }) => (
+  <motion.span
+    className={cn("inline-flex items-center align-middle", className)}
+    title={title}
+    aria-label={title}
+    initial={animate ? { scale: 0.65, opacity: 0, rotate: -10 } : false}
+    animate={animate ? { scale: 1, opacity: 1, rotate: 0 } : false}
+    transition={animate ? { type: 'spring', stiffness: 520, damping: 22 } : undefined}
+  >
+    <motion.span
+      initial={false}
+      animate={animate ? { filter: ['brightness(1)', 'brightness(1.35)', 'brightness(1)'] } : undefined}
+      transition={animate ? { duration: 0.9, times: [0, 0.35, 1] } : undefined}
+      className="inline-flex"
+    >
+      <BadgeCheck size={14} className="text-blue-500" />
+    </motion.span>
+  </motion.span>
+);
 
 const matchesPostSearch = (post: Post, value: string) => {
   const query = normalizeSearchText(value);
@@ -316,6 +456,8 @@ interface UserProfile {
   birthdate?: string;
   city?: string;
   hideEmail?: boolean;
+  verified?: boolean;
+  verifiedAt?: Timestamp;
   typing?: boolean;
   typingTo?: string;
   typingAt?: Timestamp;
@@ -353,6 +495,7 @@ interface Post {
   authorName: string;
   authorPhoto: string;
   authorUsername?: string;
+  authorVerified?: boolean;
   content: string;
   imageUrl?: string;
   imageUrls?: string[];
@@ -369,14 +512,23 @@ interface CommentNode extends Comment {
 
 interface Notification {
   id: string;
-  type: 'like' | 'comment' | 'follow' | 'repost' | 'follow_request' | 'new_post';
+  type: 'like' | 'comment' | 'follow' | 'repost' | 'follow_request' | 'new_post' | 'verification_approved' | 'verification_rejected' | 'verification_request_sent';
   fromUid: string;
   fromName: string;
   fromPhoto: string;
+  fromVerified?: boolean;
   toUid: string;
   postId?: string;
   createdAt: Timestamp;
   read: boolean;
+  reason?: string;
+}
+
+interface VerificationNotification {
+  id: string;
+  type: 'sent' | 'approved' | 'rejected';
+  title: string;
+  message: string;
 }
 
 interface Comment {
@@ -384,6 +536,7 @@ interface Comment {
   authorUid: string;
   authorName: string;
   authorPhoto: string;
+  authorVerified?: boolean;
   text: string;
   createdAt: Timestamp;
   likes: number;
@@ -470,6 +623,7 @@ const translations = {
     onboardingSubtitle: 'Let’s finish your profile in a few quick steps.',
     next: 'Next',
     back: 'Back',
+    close: 'Close',
     step: 'Step',
     stepWelcome: 'Welcome',
     stepUsername: 'Username',
@@ -503,15 +657,20 @@ const translations = {
     storageUnauthenticated: 'Please sign in again to upload',
     storageRetryLimit: 'Upload failed (retry limit exceeded)',
     storageQuota: 'Storage quota exceeded',
-    storageCanceled: 'Upload canceled',
-    gifTooLarge: 'GIF is too large',
-    uploadFailed: 'Upload failed',
-    add: 'Add',
-    post: 'Post',
-    uploading: 'Uploading...',
-    uploadingImages: 'Uploading images...',
+     storageCanceled: 'Upload canceled',
+     gifTooLarge: 'GIF is too large',
+     uploadFailed: 'Upload failed',
+     uploadTimeout: 'Upload timed out',
+     invalidFileType: 'Invalid file type. Only images are allowed.',
+     tooManyFiles: 'Too many files. Maximum 10 images allowed.',
+     fileTooLarge: 'File is too large. Maximum 20MB allowed.',
+     previewFailed: 'Failed to generate preview',
+     add: 'Add',
+     post: 'Post',
+     uploading: 'Uploading...',
+     uploadingImages: 'Uploading images...',
     postPlaceholder: "What's on your mind?",
-    dismiss: 'Dismiss',
+    dismissReport: 'Dismiss',
     clear: 'Clear',
     save: 'Save',
     cancel: 'Cancel',
@@ -531,12 +690,19 @@ const translations = {
     noBio: 'No bio yet',
     follow: 'Follow',
     followingBtn: 'Following',
-    block: 'Block',
-    blocked: 'Blocked',
-    userNotFound: 'User not found',
-    noPosts: 'No posts yet',
-    noFollowers: 'No followers yet',
-    noFollowing: 'Not following anyone yet',
+	    block: 'Block',
+	    blocked: 'Blocked',
+	    userNotFound: 'User not found',
+	    quickActions: 'Quick actions',
+	    uidOrUsername: 'UID or @username',
+	    search: 'Search',
+	    loading: 'Loading...',
+	    verify: 'Verify',
+	    removeVerify: 'Remove verify',
+	    unverified: 'Verification removed',
+	    noPosts: 'No posts yet',
+	    noFollowers: 'No followers yet',
+	    noFollowing: 'Not following anyone yet',
     likedBy: 'Liked by',
     noLikes: 'No likes yet',
     notificationsTitle: 'Notifications',
@@ -663,6 +829,82 @@ const translations = {
     googleAccount: 'Google Account',
     settingsShort: 'SET',
     profileInfo: 'Profile info',
+    verified: 'Verified',
+    verifiedInfoTitle: 'Verified account',
+    verifiedInfoText: 'This badge confirms that Zimo verified this account as authentic.',
+    howItWorks: 'How does it work?',
+    openYourProfileToVerify: 'Open your profile to request verification',
+  verification: 'Verification',
+  requestVerification: 'Request verification',
+  verificationRequested: 'Verification request sent',
+  verificationPending: 'Verification pending',
+  verificationHint: 'Get a verified badge on your profile. An admin will review your request.',
+  verificationApprovedToast: 'Verification approved',
+  verificationApprovedNotification: 'Your verification request has been approved',
+  verificationRejectedToast: 'Verification rejected',
+  verificationRejectedNotification: 'Your verification request has been rejected: {reason}',
+  verificationRequestSentNotification: 'Your verification request has been sent',
+  rejectionReason: 'Rejection reason',
+  rejectionReasonPlaceholder: 'Enter reason for rejection (optional)',
+  noReason: 'No reason provided',
+  admin: 'Admin',
+    adminPanel: 'Admin panel',
+    quickProfile: 'Quick profile',
+    uidPlaceholder: 'UID (e.g. abc123...)',
+    open: 'Open',
+    openProfile: 'Open profile',
+    evidence: 'Evidence (optional)',
+    evidenceHint: 'Add up to 3 links (Drive/YouTube/etc).',
+    evidenceLinkPlaceholder: 'Evidence link (https://...)',
+    remove: 'Remove',
+    reports: 'Reports',
+    noReports: 'No reports',
+    openPost: 'Open post',
+    openAuthor: 'Open author',
+    dismiss: 'Dismiss',
+    markActionTaken: 'Action taken',
+    reporter: 'Reporter',
+    author: 'Author',
+    noPostFound: 'Post not found',
+    maintenanceTitle: 'Technical break',
+    maintenanceHint: 'We are doing maintenance. Please come back later.',
+    configUnavailable: 'Service is unavailable',
+    configUnavailableHint: 'The app configuration could not be loaded. This is usually a Firestore rules issue. Please try again later.',
+    maintenanceSoonBack: 'We’ll be back soon!',
+    maintenanceAdminBanner: 'Maintenance is ON (users are locked out)',
+    timeLeft: 'Time left:',
+    maintenanceNews: 'News',
+    welcomeBack: 'Thanks for waiting! Sorry for the inconvenience — welcome back to Zimo!',
+    maintenanceEndsAtLabel: 'Ends at (optional)',
+    announcement: 'Announcement',
+    announcementTitleLabel: 'Title',
+    announcementBodyLabel: 'Text',
+    sendAnnouncement: 'Send to everyone',
+    announcementList: 'All announcements',
+    noAnnouncements: 'No announcements',
+    enable: 'Enable',
+    disable: 'Disable',
+    maintenanceAdminNote: 'Maintenance is enabled. Non-admin users will see the maintenance screen; admins won’t be redirected.',
+    preview: 'Preview',
+    offlineTryLater: 'No internet connection. Try again later.',
+    requestTimedOut: 'Request timed out. Please try again.',
+    quotaExceeded: 'Too many requests. Please wait a bit and try again.',
+    quotaExceededQueued: 'Too many requests. I will keep trying to turn maintenance off in the background.',
+    maintenanceDisableQueued: 'Turning off… (queued)',
+    readOnlyMode: 'Read-only mode is enabled',
+    maintenance: 'Maintenance',
+    readOnly: 'Read-only',
+    maintenanceMessageLabel: 'Message',
+    saveChanges: 'Save changes',
+    verificationFlowTitle: 'Verification',
+    startVerification: 'Start verification',
+    verificationWhy: 'Why do you need a badge?',
+    verificationCategoryPopular: 'Public figure',
+    verificationCategoryPersonal: 'Personal use',
+    verificationCategoryBrand: 'Brand / Organization',
+    verificationCategoryOther: 'Other',
+    verificationTellMore: 'Tell us a bit more (optional)',
+    submitVerification: 'Submit request',
     displayNameLabel: 'Name',
     bioLabel: 'Bio',
     birthdateLabel: 'Birthday',
@@ -675,6 +917,8 @@ const translations = {
     notificationsHint: 'Show badges and in-app notification popups.',
     toastsToggle: 'Pop-up messages',
     toastsHint: 'Show quick success/error banners at the top.',
+    verificationNotifications: 'Verification notifications',
+    verificationNotificationsHint: 'Show in-app banners for verification events.',
     profileSaved: 'Profile updated',
     messagesSubtitle: 'Stay close to your people and keep the conversation flowing.',
     noRecentChats: 'No recent chats yet',
@@ -740,6 +984,7 @@ const translations = {
     onboardingSubtitle: 'Давайте оформим профиль за пару шагов.',
     next: 'Далее',
     back: 'Назад',
+    close: 'Закрыть',
     step: 'Шаг',
     stepWelcome: 'Старт',
     stepUsername: 'Юзернейм',
@@ -774,9 +1019,14 @@ const translations = {
     storageRetryLimit: 'Загрузка не удалась (слишком много попыток)',
     storageQuota: 'Превышена квота Storage',
     storageCanceled: 'Загрузка отменена',
-    gifTooLarge: 'GIF слишком большой',
-    uploadFailed: 'Не удалось загрузить',
-    add: 'Добавить',
+     gifTooLarge: 'GIF слишком большой',
+     uploadFailed: 'Не удалось загрузить',
+     uploadTimeout: 'Время загрузки истекло',
+     invalidFileType: 'Неверный тип файла. Разрешены только изображения.',
+     tooManyFiles: 'Слишком много файлов. Максимум 10 изображений.',
+     fileTooLarge: 'Файл слишком большой. Максимум 20МБ.',
+     previewFailed: 'Не удалось создать превью',
+     add: 'Добавить',
     post: 'Опубликовать',
     uploading: 'Загрузка...',
     uploadingImages: 'Загружаем изображения...',
@@ -801,12 +1051,19 @@ const translations = {
     noBio: 'Пока нет описания',
     follow: 'Подписаться',
     followingBtn: 'Подписки',
-    block: 'Заблокировать',
-    blocked: 'Заблокирован',
-    userNotFound: 'Пользователь не найден',
-    noPosts: 'Пока нет постов',
-    noFollowers: 'Пока нет подписчиков',
-    noFollowing: 'Пока нет подписок',
+	    block: 'Заблокировать',
+	    blocked: 'Заблокирован',
+	    userNotFound: 'Пользователь не найден',
+	    quickActions: 'Быстрые действия',
+	    uidOrUsername: 'UID или @username',
+	    search: 'Поиск',
+	    loading: 'Загрузка...',
+	    verify: 'Выдать галочку',
+	    removeVerify: 'Забрать галочку',
+	    unverified: 'Галочка снята',
+	    noPosts: 'Пока нет постов',
+	    noFollowers: 'Пока нет подписчиков',
+	    noFollowing: 'Пока нет подписок',
     likedBy: 'Понравилось',
     noLikes: 'Пока нет лайков',
     notificationsTitle: 'Уведомления',
@@ -933,6 +1190,82 @@ const translations = {
     googleAccount: 'Аккаунт Google',
     settingsShort: 'НАСТ',
     profileInfo: 'Профиль',
+    verified: 'Верифицирован',
+    verifiedInfoTitle: 'Верифицированный аккаунт',
+    verifiedInfoText: 'Эта галочка подтверждает, что Zimo проверил подлинность аккаунта.',
+    howItWorks: 'Как это работает?',
+    openYourProfileToVerify: 'Откройте свой профиль, чтобы запросить верификацию',
+  verification: 'Верификация',
+  requestVerification: 'Запросить верификацию',
+  verificationRequested: 'Запрос на верификацию отправлен',
+  verificationPending: 'Верификация на рассмотрении',
+  verificationHint: 'Получите галочку в профиле. Администратор рассмотрит запрос.',
+  verificationApprovedToast: 'Верификация одобрена',
+  verificationApprovedNotification: 'Ваш запрос на верификацию одобрен',
+  verificationRejectedToast: 'Верификация отклонена',
+  verificationRejectedNotification: 'Ваш запрос на верификацию отклонен: {reason}',
+  verificationRequestSentNotification: 'Ваш запрос на верификацию отправлен',
+  rejectionReason: 'Причина отказа',
+  rejectionReasonPlaceholder: 'Введите причину отказа (необязательно)',
+  noReason: 'Причина не указана',
+  admin: 'Админ',
+    adminPanel: 'Админ панель',
+    quickProfile: 'Быстрый просмотр',
+    uidPlaceholder: 'UID (например, abc123...)',
+    open: 'Открыть',
+    openProfile: 'Открыть профиль',
+    evidence: 'Доказательства (необязательно)',
+    evidenceHint: 'Можно добавить до 3 ссылок (Drive/YouTube и т.д.).',
+    evidenceLinkPlaceholder: 'Ссылка на доказательство (https://...)',
+    remove: 'Убрать',
+    reports: 'Жалобы',
+    noReports: 'Жалоб нет',
+    openPost: 'Открыть пост',
+    openAuthor: 'Профиль автора',
+    dismissReport: 'Отклонить',
+    markActionTaken: 'Меры приняты',
+    reporter: 'Жалоба от',
+    author: 'Автор',
+    noPostFound: 'Пост не найден',
+    maintenanceTitle: 'Технический перерыв',
+    maintenanceHint: 'Мы проводим работы. Зайдите чуть позже.',
+    configUnavailable: 'Сервис недоступен',
+    configUnavailableHint: 'Не удалось загрузить конфигурацию приложения. Обычно это из-за правил Firestore. Попробуйте зайти позже.',
+    maintenanceSoonBack: 'Скоро вернёмся!',
+    maintenanceAdminBanner: 'Техработы ВКЛ (у пользователей блокировка)',
+    timeLeft: 'Осталось:',
+    maintenanceNews: 'Новости',
+    welcomeBack: 'Спасибо за ожидание! Извиняемся за неудобства — добро пожаловать снова в Zimo!',
+    maintenanceEndsAtLabel: 'Закончится (необязательно)',
+    announcement: 'Оповещение',
+    announcementTitleLabel: 'Название',
+    announcementBodyLabel: 'Текст',
+    sendAnnouncement: 'Отправить всем',
+    announcementList: 'Все оповещения',
+    noAnnouncements: 'Оповещений нет',
+    enable: 'Включить',
+    disable: 'Выключить',
+    maintenanceAdminNote: 'Техработы включены. У обычных пользователей будет экран техперерыва; админов не будет перекидывать.',
+    preview: 'Посмотреть',
+    offlineTryLater: 'Нет интернета. Попробуйте позже.',
+    requestTimedOut: 'Слишком долго. Попробуйте ещё раз.',
+    quotaExceeded: 'Слишком много запросов. Подождите немного и попробуйте снова.',
+    quotaExceededQueued: 'Слишком много запросов. Я буду пробовать выключить техработы в фоне.',
+    maintenanceDisableQueued: 'Выключаю… (в очереди)',
+    readOnlyMode: 'Включён режим только чтение',
+    maintenance: 'Техработы',
+    readOnly: 'Только чтение',
+    maintenanceMessageLabel: 'Сообщение',
+    saveChanges: 'Сохранить',
+    verificationFlowTitle: 'Верификация',
+    startVerification: 'Начать верификацию',
+    verificationWhy: 'Зачем вам галочка?',
+    verificationCategoryPopular: 'Популярная личность',
+    verificationCategoryPersonal: 'Для личного пользования',
+    verificationCategoryBrand: 'Бренд / Организация',
+    verificationCategoryOther: 'Другое',
+    verificationTellMore: 'Коротко расскажите (необязательно)',
+    submitVerification: 'Отправить запрос',
     displayNameLabel: 'Имя',
     bioLabel: 'Био',
     birthdateLabel: 'Дата рождения',
@@ -945,6 +1278,8 @@ const translations = {
     notificationsHint: 'Показывать бейджи и всплывающие уведомления.',
     toastsToggle: 'Всплывающие сообщения',
     toastsHint: 'Показывать быстрые подсказки вверху.',
+    verificationNotifications: 'Уведомления о верификации',
+    verificationNotificationsHint: 'Показывать баннеры в приложении о событиях верификации.',
     profileSaved: 'Профиль обновлён',
     messagesSubtitle: 'Оставайтесь на связи и продолжайте диалоги.',
     noRecentChats: 'Пока нет недавних чатов',
@@ -964,6 +1299,45 @@ const STORAGE_ENABLED = import.meta.env.VITE_STORAGE_ENABLED !== 'false';
 const MAX_IMAGE_BYTES = 700 * 1024;
 const MAX_IMAGE_DIM = 1280;
 const MAX_GIF_BYTES = 6 * 1024 * 1024;
+const MAX_CONCURRENT_UPLOADS = 3;
+
+// Network-aware compression settings
+interface CompressionSettings {
+  maxDimension: number;
+  quality: number;
+}
+
+const getNetworkAdjustedSettings = (): CompressionSettings => {
+  const defaultSettings: CompressionSettings = { maxDimension: 1280, quality: 0.82 };
+  
+  if (typeof navigator === 'undefined' || !('connection' in navigator)) {
+    return defaultSettings;
+  }
+  
+  const connection = (navigator as any).connection;
+  if (!connection) return defaultSettings;
+  
+  const effectiveType = connection.effectiveType || '4g';
+  const downlink = connection.downlink || 10;
+  
+  console.log('Network:', { effectiveType, downlink: `${downlink} Mbps` });
+  
+  switch (effectiveType) {
+    case 'slow-2g':
+      return { maxDimension: 640, quality: 0.60 };
+    case '2g':
+      return { maxDimension: 800, quality: 0.70 };
+    case '3g':
+      return { maxDimension: 1024, quality: 0.78 };
+    case '4g':
+      if (downlink < 3) {
+        return { maxDimension: 1024, quality: 0.78 };
+      }
+      return defaultSettings;
+    default:
+      return defaultSettings;
+  }
+};
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes}B`;
@@ -973,7 +1347,7 @@ const formatBytes = (bytes: number) => {
   return `${mb}MB`;
 };
 
-const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: number }> => {
+const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: number; format: string }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('file_read_failed'));
@@ -981,7 +1355,8 @@ const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: num
       const img = new Image();
       img.onerror = () => reject(new Error('image_decode_failed'));
       img.onload = () => {
-        const scale = Math.min(1, MAX_IMAGE_DIM / Math.max(img.width, img.height));
+        const settings = getNetworkAdjustedSettings();
+        const scale = Math.min(1, settings.maxDimension / Math.max(img.width, img.height));
         const width = Math.round(img.width * scale);
         const height = Math.round(img.height * scale);
         const canvas = document.createElement('canvas');
@@ -990,9 +1365,15 @@ const readAndCompressImage = (file: File): Promise<{ dataUrl: string; bytes: num
         const ctx = canvas.getContext('2d');
         if (!ctx) return reject(new Error('canvas_not_supported'));
         ctx.drawImage(img, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+
+        // Try WebP first if supported (25-35% smaller than JPEG)
+        const mimeType = canvas.toDataURL('image/webp', settings.quality).startsWith('data:image/webp') 
+          ? 'image/webp' 
+          : 'image/jpeg';
+        
+        const dataUrl = canvas.toDataURL(mimeType, settings.quality);
         const bytes = Math.round((dataUrl.length * 3) / 4);
-        resolve({ dataUrl, bytes });
+        resolve({ dataUrl, bytes, format: mimeType });
       };
       img.src = reader.result as string;
     };
@@ -1008,31 +1389,70 @@ const dataUrlToBlob = async (dataUrl: string) => {
 const uploadBlobToStorage = async (
   path: string,
   blob: Blob,
-  onProgress?: (pct: number) => void
-) => {
-  const storageRef = ref(storage, path);
-  const uploadTask = uploadBytesResumable(storageRef, blob, {
-    contentType: blob.type || 'application/octet-stream',
-  });
+  onProgress?: (pct: number) => void,
+  timeoutMs: number = 300000 // 5 minutes default
+): Promise<string> => {
+  const maxRetries = 3;
+  let attempt = 0;
 
-  return await new Promise<string>((resolve, reject) => {
-    uploadTask.on(
-      'state_changed',
-      (snapshot) => {
-        const pct = snapshot.totalBytes ? (snapshot.bytesTransferred / snapshot.totalBytes) * 100 : 0;
-        onProgress?.(pct);
-      },
-      (error) => reject(error),
-      async () => {
-        try {
-          const url = await getDownloadURL(uploadTask.snapshot.ref);
-          resolve(url);
-        } catch (err) {
-          reject(err);
+  const uploadWithRetry = async (): Promise<string> => {
+    attempt++;
+    const storageRef = ref(storage, path);
+    const uploadTask = uploadBytesResumable(storageRef, blob, {
+      contentType: blob.type || 'application/octet-stream',
+    });
+
+    return await new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        uploadTask.cancel();
+        reject(new Error('upload_timeout'));
+      }, timeoutMs);
+
+      uploadTask.on(
+        'state_changed',
+        (snapshot) => {
+          const pct = snapshot.totalBytes ? (snapshot.bytesTransferred / snapshot.totalBytes) * 100 : 0;
+          onProgress?.(pct);
+        },
+        (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+        async () => {
+          clearTimeout(timeout);
+          try {
+            const url = await getDownloadURL(uploadTask.snapshot.ref);
+            resolve(url);
+          } catch (err) {
+            reject(err);
+          }
         }
+      );
+    });
+  };
+
+  let lastError: any;
+  while (attempt <= maxRetries) {
+    try {
+      return await uploadWithRetry();
+    } catch (error) {
+      lastError = error;
+      // Don't retry on certain errors
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (errorMsg === 'upload_timeout' || 
+          errorMsg === 'storage/quota-exceeded' || 
+          errorMsg === 'storage/unauthorized' ||
+          error.code?.startsWith('storage/')) {
+        break;
       }
-    );
-  });
+      // Retry with exponential backoff (1s, 2s, 4s)
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
 };
 
 const getDefaultLanguage = (): Language => {
@@ -1060,6 +1480,7 @@ const getImageErrorMessage = (error: unknown, t: (key: TranslationKey) => string
 const getStorageErrorMessage = (error: unknown, t: (key: TranslationKey) => string) => {
   const anyErr = error as any;
   const code: string = anyErr?.code || '';
+  const message: string = anyErr?.message || '';
   switch (code) {
     case 'storage/unauthorized':
       return t('storageUnauthorized');
@@ -1072,6 +1493,9 @@ const getStorageErrorMessage = (error: unknown, t: (key: TranslationKey) => stri
     case 'storage/canceled':
       return t('storageCanceled');
     default:
+      if (message === 'upload_timeout') {
+        return t('uploadTimeout');
+      }
       return code ? `${t('genericError')} (${code})` : t('genericError');
   }
 };
@@ -1097,7 +1521,7 @@ function PhotoLimitsNotice({ className }: { className?: string }) {
   );
 }
 
-type View = 'feed' | 'profile' | 'messages' | 'chat' | 'notifications' | 'post_detail' | 'user_profile' | 'explore' | 'bookmarks';
+type View = 'feed' | 'profile' | 'messages' | 'chat' | 'notifications' | 'post_detail' | 'user_profile' | 'explore' | 'bookmarks' | 'admin';
 
 // --- Context ---
 
@@ -1160,6 +1584,127 @@ const useToast = () => {
   return context;
 };
 
+const VerificationNotificationContext = createContext<{
+  addVerificationNotification: (notification: VerificationNotification) => void;
+} | null>(null);
+
+const useVerificationNotifications = () => {
+  const context = useContext(VerificationNotificationContext);
+  if (!context) throw new Error('useVerificationNotifications must be used within VerificationNotificationProvider');
+  return context;
+};
+
+function VerificationNotificationProvider({ children }: { children: React.ReactNode }) {
+  const [notifications, setNotifications] = useState<VerificationNotification[]>([]);
+  const { verificationNotificationsEnabled } = useSettings();
+  const { user } = useAuth();
+
+  const addVerificationNotification = (notification: VerificationNotification) => {
+    if (!verificationNotificationsEnabled) return;
+    const id = Math.random().toString(36).substr(2, 9);
+    setNotifications(prev => [...prev, { ...notification, id }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 6000);
+  };
+
+  // Listen for new verification notifications from Firestore
+  useEffect(() => {
+    if (!user || !verificationNotificationsEnabled) return;
+    
+    const q = query(
+      collection(db, 'notifications'),
+      where('toUid', '==', user.uid),
+      where('type', 'in', ['verification_approved', 'verification_rejected', 'verification_request_sent']),
+      orderBy('createdAt', 'desc'),
+      limit(1)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const data = change.doc.data();
+          let type: VerificationNotification['type'] = 'sent';
+          let title = '';
+          let message = '';
+
+          switch (data.type) {
+            case 'verification_approved':
+              type = 'approved';
+              title = t('verificationApprovedToast');
+              message = t('verificationApprovedNotification');
+              break;
+            case 'verification_rejected':
+              type = 'rejected';
+              title = t('verificationRejectedToast');
+              message = data.reason
+                ? t('verificationRejectedNotification').replace('{reason}', data.reason)
+                : t('verificationRejectedNotification').replace('{reason}', t('noReason'));
+              break;
+            case 'verification_request_sent':
+              type = 'sent';
+              title = t('verificationRequested');
+              message = t('verificationRequestSentNotification');
+              break;
+          }
+
+          addVerificationNotification({ type, title, message });
+        }
+      });
+    });
+
+    return () => unsubscribe();
+  }, [user, verificationNotificationsEnabled]);
+
+  return (
+    <VerificationNotificationContext.Provider value={{ addVerificationNotification }}>
+      {children}
+      <div className="fixed top-20 md:top-24 left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2 w-full max-w-md px-4 pointer-events-none">
+        <AnimatePresence>
+          {notifications.map(notification => (
+            <motion.div
+              key={notification.id}
+              initial={{ opacity: 0, y: -20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.95, transition: { duration: 0.2 } }}
+              transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+              className="pointer-events-auto"
+            >
+              <div className={cn(
+                "rounded-2xl shadow-2xl backdrop-blur-md border p-4 flex items-start gap-3",
+                notification.type === 'approved'
+                  ? "bg-green-500/90 border-green-400 text-white"
+                  : notification.type === 'rejected'
+                  ? "bg-red-500/90 border-red-400 text-white"
+                  : "bg-blue-500/90 border-blue-400 text-white"
+              )}>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    {notification.type === 'approved' && <BadgeCheck size={18} className="text-white" />}
+                    {notification.type === 'rejected' && <X size={18} className="text-white" />}
+                    {notification.type === 'sent' && <Info size={18} className="text-white" />}
+                    <span className="text-sm font-bold">
+                      {notification.title}
+                    </span>
+                  </div>
+                  <p className="text-sm opacity-90 leading-relaxed">{notification.message}</p>
+                </div>
+                <button
+                  onClick={() => setNotifications(prev => prev.filter(n => n.id !== notification.id))}
+                  className="flex-shrink-0 p-1 hover:bg-white/10 rounded-full transition-colors ml-2"
+                  aria-label="Close notification"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+    </VerificationNotificationContext.Provider>
+  );
+}
+
 const AuthContext = createContext<{
   user: FirebaseUser | null;
   profile: UserProfile | null;
@@ -1180,12 +1725,43 @@ const SettingsContext = createContext<{
   setNotificationsEnabled: (v: boolean) => void;
   toastsEnabled: boolean;
   setToastsEnabled: (v: boolean) => void;
+  verificationNotificationsEnabled: boolean;
+  setVerificationNotificationsEnabled: (v: boolean) => void;
   t: (key: TranslationKey) => string;
 } | null>(null);
 
 const useSettings = () => {
   const context = useContext(SettingsContext);
   if (!context) throw new Error('useSettings must be used within SettingsContext');
+  return context;
+};
+
+type AppConfig = {
+  configLoaded: boolean;
+  configError: string | null;
+  maintenance: boolean;
+  readOnly: boolean;
+  maintenanceMessage: string;
+  maintenanceEndsAt: Timestamp | null;
+  legacyAnnouncement: AppAnnouncement | null;
+  isAdmin: boolean;
+  pendingMaintenanceDisable?: boolean;
+};
+
+type AppAnnouncement = {
+  id: string;
+  title: string;
+  body: string;
+  createdAt?: Timestamp;
+  createdBy?: string;
+  active?: boolean;
+};
+
+const AppConfigContext = createContext<AppConfig | null>(null);
+
+const useAppConfig = () => {
+  const context = useContext(AppConfigContext);
+  if (!context) throw new Error('useAppConfig must be used within AppConfigContext');
   return context;
 };
 
@@ -1207,6 +1783,10 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
     const stored = localStorage.getItem('app_toasts');
     return stored ? stored === 'on' : true;
   });
+  const [verificationNotificationsEnabled, setVerificationNotificationsEnabled] = useState(() => {
+    const stored = localStorage.getItem('app_verification_notifications');
+    return stored ? stored === 'on' : true;
+  });
 
   useEffect(() => {
     if (darkMode) document.documentElement.classList.add('dark');
@@ -1226,21 +1806,30 @@ function SettingsProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('app_toasts', toastsEnabled ? 'on' : 'off');
   }, [toastsEnabled]);
 
+  useEffect(() => {
+    localStorage.setItem('app_verification_notifications', verificationNotificationsEnabled ? 'on' : 'off');
+  }, [verificationNotificationsEnabled]);
+
   const t = (key: TranslationKey) => translations[language][key] || translations.en[key] || key;
 
   return (
-    <SettingsContext.Provider value={{ darkMode, setDarkMode, language, setLanguage, notificationsEnabled, setNotificationsEnabled, toastsEnabled, setToastsEnabled, t }}>
+    <SettingsContext.Provider value={{ darkMode, setDarkMode, language, setLanguage, notificationsEnabled, setNotificationsEnabled, toastsEnabled, setToastsEnabled, verificationNotificationsEnabled, setVerificationNotificationsEnabled, t }}>
       {children}
     </SettingsContext.Provider>
   );
 }
 
-function AuthProvider({ children }: { children: React.ReactNode }) {
+export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const lastProfileSync = useRef<{ photo?: string; name?: string; username?: string }>({});
+  const hasUserDocRef = useRef(false);
+  const didSetOnlineOnceRef = useRef(false);
+  const PRESENCE_ENABLED = false;
+  const AUTO_SYNC_POST_AUTHOR_FIELDS = false;
+  const AUTO_NORMALIZE_USERNAME = false;
 
   // Skip connection test - Supabase handles errors automatically
   useEffect(() => {}, []);
@@ -1261,11 +1850,11 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!user) return;
 
     const userDocRef = doc(db, 'users', user.uid);
-
-    // Use Firebase to update user (Appwrite migration has issues)
-    updateDoc(userDocRef, { isOnline: true, lastSeen: serverTimestamp() }).catch(() => {});
+    didSetOnlineOnceRef.current = false;
 
     const handleVisibilityChange = () => {
+      if (!PRESENCE_ENABLED) return;
+      if (!hasUserDocRef.current) return;
       if (document.visibilityState === 'visible') {
         updateDoc(userDocRef, { isOnline: true, lastSeen: serverTimestamp() }).catch(() => {});
       } else {
@@ -1279,10 +1868,11 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       userDocRef,
       async (docSnap) => {
         if (docSnap.exists()) {
+          hasUserDocRef.current = true;
           const data = docSnap.data() as UserProfile;
           const normalizedUsername = data.username ? normalizeUsername(data.username) : '';
           const needsNormalization = data.username && data.username !== normalizedUsername;
-          if (needsNormalization) {
+          if (AUTO_NORMALIZE_USERNAME && needsNormalization) {
             // Only normalize once - skip if already normalized
             setTimeout(() => {
               updateDoc(userDocRef, {
@@ -1301,16 +1891,26 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
             nextSync.photo !== lastProfileSync.current.photo ||
             nextSync.name !== lastProfileSync.current.name ||
             nextSync.username !== lastProfileSync.current.username;
-          if (shouldSync && data.uid) {
-            syncUserPosts(data.uid, {
-              authorPhoto: data.photoURL || '',
-              authorName: data.displayName || '',
-              authorUsername: normalizedUsername
-            }).catch(console.error);
+          // Avoid background fan-out updates (can easily exhaust Firestore write quota).
+          // Keep post author fields best-effort at write-time; admin tools can resync manually if needed.
+          if (shouldSync) {
+            if (AUTO_SYNC_POST_AUTHOR_FIELDS && data.uid) {
+              syncUserPosts(data.uid, {
+                authorPhoto: data.photoURL || '',
+                authorName: data.displayName || '',
+                authorUsername: normalizedUsername
+              }).catch(console.error);
+            }
             lastProfileSync.current = nextSync;
           }
           setNeedsOnboarding(!data.username);
+          // Отмечаем "онлайн" один раз на сессию, чтобы не зациклить onSnapshot <-> updateDoc.
+          if (PRESENCE_ENABLED && !didSetOnlineOnceRef.current) {
+            didSetOnlineOnceRef.current = true;
+            updateDoc(userDocRef, { isOnline: true, lastSeen: serverTimestamp() }).catch(() => {});
+          }
         } else {
+          hasUserDocRef.current = false;
           setProfile(null);
           setNeedsOnboarding(true);
         }
@@ -1327,7 +1927,9 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       unsubProfile();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      updateDoc(userDocRef, { isOnline: false, lastSeen: serverTimestamp() }).catch(console.error);
+      if (PRESENCE_ENABLED && hasUserDocRef.current) {
+        updateDoc(userDocRef, { isOnline: false, lastSeen: serverTimestamp() }).catch(() => {});
+      }
     };
   }, [user]);
 
@@ -1436,12 +2038,15 @@ function CommentThread({
 
         return (
           <div key={comment.id} className="flex gap-3 group/comment">
-            <img src={comment.authorPhoto} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
+            <img src={comment.authorPhoto} loading="lazy" className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
             <div className="flex-1 min-w-0">
               <div className="bg-gray-50 dark:bg-zinc-800/50 p-3 rounded-2xl">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="font-semibold text-xs mb-1">{comment.authorName}</div>
+                    <div className="font-semibold text-xs mb-1 inline-flex items-center gap-1">
+                      <span>{comment.authorName}</span>
+                      {comment.authorVerified ? <VerifiedBadge title={t('verified')} /> : null}
+                    </div>
                     <p className="text-sm dark:text-gray-300 whitespace-pre-wrap break-words">{comment.text}</p>
                   </div>
                   <span className="text-[10px] text-gray-400 whitespace-nowrap">
@@ -1586,20 +2191,20 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   useEffect(() => {
     if (!profile) return;
     const q = query(collection(db, 'users'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
       const privateUids = snapshot.docs
         .map(doc => doc.data() as UserProfile)
         .filter(u => u.isPrivate === true)
         .map(u => u.uid);
       setPrivateAccountUids(privateUids);
-    });
+    }, 'Не удалось загрузить список приватных аккаунтов:');
     return unsubscribe;
   }, [profile]);
 
   useEffect(() => {
     if (!profile) return;
     const q = query(collection(db, 'posts'), orderBy('likes', 'desc'), limit(20));
-    const unsubscribe = onSnapshot(q, (s) => {
+    const unsubscribe = safeOnSnapshot(q, (s: any) => {
       let allPosts = s.docs.map(d => ({ id: d.id, ...d.data() } as Post));
       if (profile?.blockedUsers && profile.blockedUsers.length > 0) {
         allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
@@ -1608,21 +2213,21 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
       allPosts = allPosts.filter(p => !privateAccountUids.includes(p.authorUid));
       setTrendingPosts(allPosts.slice(0, 10));
       setLoading(false);
-    });
+    }, 'Не удалось загрузить тренды:');
     return unsubscribe;
   }, [profile, privateAccountUids]);
 
   useEffect(() => {
     if (!profile) return;
     const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(SEARCH_POST_LIMIT));
-    const unsubscribe = onSnapshot(q, (s) => {
+    const unsubscribe = safeOnSnapshot(q, (s: any) => {
       let allPosts = s.docs.map(d => ({ id: d.id, ...d.data() } as Post));
       if (profile?.blockedUsers?.length) {
         allPosts = allPosts.filter(post => !profile.blockedUsers?.includes(post.authorUid));
       }
       allPosts = allPosts.filter(post => post.authorUid === profile?.uid || !privateAccountUids.includes(post.authorUid));
       setSearchablePosts(allPosts);
-    });
+    }, 'Не удалось загрузить посты для поиска:');
     return unsubscribe;
   }, [profile, privateAccountUids]);
 
@@ -1647,14 +2252,14 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
       where('usernameLower', '<=', normalized + '\uf8ff'),
       limit(6)
     );
-    const unsubName = onSnapshot(qName, (s) => {
+    const unsubName = safeOnSnapshot(qName, (s: any) => {
       const nameResults = s.docs.map(d => d.data() as UserProfile);
       setUserResults((prev) => mergeUniqueUsers([...nameResults, ...prev]).slice(0, 8));
-    });
-    const unsubUsername = onSnapshot(qUsername, (s) => {
+    }, 'Не удалось искать пользователей по имени:');
+    const unsubUsername = safeOnSnapshot(qUsername, (s: any) => {
       const userResults = s.docs.map(d => d.data() as UserProfile);
       setUserResults((prev) => mergeUniqueUsers([...userResults, ...prev]).slice(0, 8));
-    });
+    }, 'Не удалось искать пользователей по username:');
     return () => { unsubName(); unsubUsername(); };
   }, [userSearch]);
 
@@ -1695,9 +2300,12 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
                 }}
                 className="w-full flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
               >
-                <img src={u.photoURL} className="w-9 h-9 rounded-full object-cover" referrerPolicy="no-referrer" />
+                <img src={u.photoURL} loading="lazy" className="w-9 h-9 rounded-full object-cover" referrerPolicy="no-referrer" />
                 <div className="min-w-0">
-                  <div className="text-sm font-bold truncate">{u.displayName}</div>
+                  <div className="text-sm font-bold truncate inline-flex items-center gap-1">
+                    <span>{u.displayName}</span>
+                    {u.verified ? <VerifiedBadge title={t('verified')} /> : null}
+                  </div>
                   <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(u, profile?.uid, t)}</div>
                 </div>
               </button>
@@ -1718,9 +2326,12 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
                 className="w-full p-4 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
               >
                 <div className="flex items-center gap-3 mb-2">
-                  <img src={post.authorPhoto} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
+                  <img src={post.authorPhoto} loading="lazy" className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="min-w-0">
-                    <div className="text-sm font-bold truncate">{post.authorName}</div>
+                    <div className="text-sm font-bold truncate inline-flex items-center gap-1">
+                      <span>{post.authorName}</span>
+                      {post.authorVerified ? <VerifiedBadge title={t('verified')} /> : null}
+                    </div>
                     <div className="text-[10px] text-gray-400 truncate">{formatUsername(post.authorUsername)}</div>
                   </div>
                 </div>
@@ -1799,8 +2410,8 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
     }
 
     setLoading(true);
-    const bookmarkOrder = profile.bookmarks;
-    const chunks = chunkItems(bookmarkOrder, BOOKMARK_QUERY_CHUNK);
+    const bookmarkOrder = (profile.bookmarks ?? []) as string[];
+    const chunks = chunkItems<string>(bookmarkOrder, BOOKMARK_QUERY_CHUNK);
     const byId = new Map<string, Post>();
     const initializedChunks = new Set<number>();
     let reportedHiddenPosts = false;
@@ -1820,14 +2431,14 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 
     const unsubscribers = chunks.map((ids, index) => {
       const q = query(collection(db, 'posts'), where('__name__', 'in', ids));
-      return onSnapshot(q, (s) => {
+      return safeOnSnapshot(q, (s: any) => {
         ids.forEach(id => byId.delete(id));
         s.docs.forEach(d => {
           byId.set(d.id, { id: d.id, ...d.data() } as Post);
         });
         initializedChunks.add(index);
         syncPosts();
-      });
+      }, 'Не удалось загрузить закладки:');
     });
 
     return () => {
@@ -1877,18 +2488,18 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
     
     // Get users I'm not following
     const qUsers = query(collection(db, 'users'), limit(20));
-    const unsubUsers = onSnapshot(qUsers, (s) => {
+    const unsubUsers = safeOnSnapshot(qUsers, (s: any) => {
       setUsers(s.docs.map(d => d.data() as UserProfile).filter(u => u.uid !== profile.uid));
-    });
+    }, 'Не удалось загрузить рекомендации пользователей:');
 
     const qFollows = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
-    const unsubFollows = onSnapshot(qFollows, (s) => {
+    const unsubFollows = safeOnSnapshot(qFollows, (s: any) => {
       const existing = s.docs
         .map(d => d.data() as Follow)
         .filter(f => f.status !== 'rejected')
         .map(f => f.followingUid);
       setConnectedUids(existing);
-    });
+    }, 'Не удалось загрузить подписки (WhoToFollow):');
 
     return () => { unsubUsers(); unsubFollows(); };
   }, [profile]);
@@ -1916,6 +2527,7 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
       fromUid: profile.uid,
       fromName: profile.displayName,
       fromPhoto: profile.photoURL,
+      fromVerified: profile.verified === true,
       toUid: targetUid,
       createdAt: serverTimestamp(),
       read: false
@@ -1932,10 +2544,19 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
             <button 
               onClick={() => onOpenProfile(user.uid)}
               className="flex items-center gap-3 text-left hover:opacity-80 transition-opacity flex-1 min-w-0"
-            >
-              <img src={user.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
-              <div className="min-w-0">
-                <div className="text-sm font-bold truncate">{user.displayName}</div>
+	            >
+	              <img
+	                src={user.photoURL || undefined}
+	                loading="lazy"
+	                className="w-10 h-10 rounded-full object-cover"
+	                referrerPolicy="no-referrer"
+	                alt=""
+	              />
+	              <div className="min-w-0">
+	                <div className="text-sm font-bold truncate inline-flex items-center gap-1">
+	                  <span>{user.displayName}</span>
+	                  {user.verified ? <VerifiedBadge title={t('verified')} /> : null}
+	                </div>
                 <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(user, profile?.uid, t)}</div>
               </div>
             </button>
@@ -1952,12 +2573,13 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
   );
 }
 
-function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: { 
+function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isAdmin }: { 
   currentView: View, 
   setView: (v: View) => void,
   darkMode: boolean,
   setDarkMode: (d: boolean) => void,
-  onSearchUser: (uid: string) => void
+  onSearchUser: (uid: string) => void,
+  isAdmin: boolean
 }) {
   const { t, notificationsEnabled } = useSettings();
   const { logout, profile } = useAuth();
@@ -1988,7 +2610,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
       where('usernameLower', '<=', normalized + '\uf8ff'),
       limit(5)
     );
-    const unsubName = onSnapshot(qName, (s) => {
+    const unsubName = safeOnSnapshot(qName, (s: any) => {
       const nameResults = s.docs.map(d => d.data() as UserProfile);
       setSearchResults((prev) => {
         const merged = [...nameResults, ...prev].reduce<UserProfile[]>((acc, u) => {
@@ -1997,8 +2619,8 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         }, []);
         return merged.slice(0, 7);
       });
-    });
-    const unsubUsername = onSnapshot(qUsername, (s) => {
+    }, 'Не удалось выполнить поиск по имени:');
+    const unsubUsername = safeOnSnapshot(qUsername, (s: any) => {
       const userResults = s.docs.map(d => d.data() as UserProfile);
       setSearchResults((prev) => {
         const merged = [...userResults, ...prev].reduce<UserProfile[]>((acc, u) => {
@@ -2007,7 +2629,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         }, []);
         return merged.slice(0, 7);
       });
-    });
+    }, 'Не удалось выполнить поиск по username:');
     return () => { unsubName(); unsubUsername(); };
   }, [searchQuery]);
 
@@ -2021,7 +2643,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
       where('toUid', '==', profile.uid),
       where('read', '==', false)
     );
-    const unsubscribe = onSnapshot(q, (s) => setUnreadCount(s.size));
+    const unsubscribe = safeOnSnapshot(q, (s: any) => setUnreadCount(s.size), 'Не удалось загрузить уведомления (badge):');
     return unsubscribe;
   }, [profile, notificationsEnabled]);
 
@@ -2036,7 +2658,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
       orderBy('createdAt', 'desc'),
       limit(1)
     );
-    const unsubscribe = onSnapshot(q, (s) => {
+    const unsubscribe = safeOnSnapshot(q, (s: any) => {
       const docSnap = s.docs[0];
       if (!docSnap) return;
       const id = docSnap.id;
@@ -2058,7 +2680,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         showToast(`${n.fromName} ${message}`, 'info');
         lastNotificationId.current = id;
       }
-    });
+    }, 'Не удалось слушать последнее уведомление:');
     return unsubscribe;
   }, [profile, notificationsEnabled, showToast, t]);
 
@@ -2069,18 +2691,34 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
       where('receiverUid', '==', profile.uid),
       where('read', '==', false)
     );
-    const unsubscribe = onSnapshot(q, (s) => setUnreadMessagesCount(s.size));
+    const unsubscribe = safeOnSnapshot(q, (s: any) => setUnreadMessagesCount(s.size), 'Не удалось загрузить непрочитанные сообщения (badge):');
     return unsubscribe;
   }, [profile]);
 
-  const navItems = [
+  const ProfileNavIcon: React.FC<{ size?: number }> = () =>
+    profile?.photoURL ? (
+      <img
+        src={profile.photoURL || undefined}
+        loading="lazy"
+        className="w-6 h-6 rounded-full object-cover"
+        referrerPolicy="no-referrer"
+        alt=""
+      />
+    ) : (
+      <User size={24} />
+    );
+
+  const navItems: Array<{ id: string; icon: React.ElementType; label: string; badge?: number }> = [
     { id: 'feed', icon: Home, label: t('feed') },
     { id: 'explore', icon: Compass, label: t('explore') },
     { id: 'notifications', icon: Bell, label: t('notifications'), badge: notificationsEnabled ? unreadCount : 0 },
     { id: 'bookmarks', icon: Bookmark, label: t('bookmarks') },
     { id: 'messages', icon: MessageSquare, label: t('messages'), badge: unreadMessagesCount },
-    { id: 'profile', icon: profile?.photoURL ? () => <img src={profile.photoURL} className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" /> : User, label: t('profile') },
+    { id: 'profile', icon: ProfileNavIcon, label: t('profile') },
   ];
+  if (isAdmin) {
+    navItems.splice(navItems.length - 1, 0, { id: 'admin', icon: Shield, label: t('admin') });
+  }
 
   return (
     <>
@@ -2116,9 +2754,12 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
                     }}
                     className="w-full flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
                   >
-                    <img src={u.photoURL} className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
+                    <img src={u.photoURL} loading="lazy" className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="min-w-0">
-                    <div className="text-sm font-bold truncate">{u.displayName}</div>
+                    <div className="text-sm font-bold truncate inline-flex items-center gap-1">
+                      <span>{u.displayName}</span>
+                      {u.verified ? <VerifiedBadge title={t('verified')} /> : null}
+                    </div>
                     <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(u, profile?.uid, t)}</div>
                   </div>
                 </button>
@@ -2146,7 +2787,10 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
                   currentView === item.id ? "text-black dark:text-white" : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                 )}
               >
-                {typeof item.icon === 'function' ? <item.icon /> : <item.icon size={24} />}
+                {(() => {
+                  const Icon = item.icon;
+                  return <Icon size={24} />;
+                })()}
                 {item.badge ? (
                   <span className="absolute top-1 right-1 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] border-2 border-white dark:border-black">
                     {item.badge > 9 ? '9+' : item.badge}
@@ -2158,7 +2802,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         </div>
         <div className="flex items-center gap-4">
           {profile?.photoURL && (
-            <img src={profile.photoURL} className="w-8 h-8 rounded-full object-cover cursor-pointer hidden md:block" referrerPolicy="no-referrer" onClick={() => setView('profile')} />
+            <img src={profile.photoURL || undefined} loading="lazy" className="w-8 h-8 rounded-full object-cover cursor-pointer hidden md:block" referrerPolicy="no-referrer" alt="" onClick={() => setView('profile')} />
           )}
           <button onClick={() => setDarkMode(!darkMode)} className="p-2 text-gray-500 hover:text-black dark:hover:text-white transition-colors">
             {darkMode ? <Sun size={20} /> : <Moon size={20} />}
@@ -2169,13 +2813,6 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser }: {
         </div>
       </div>
     </nav>
-    <button
-      onClick={() => setDarkMode(!darkMode)}
-      className="md:hidden fixed top-4 right-16 z-50 p-3 rounded-2xl border bg-white/90 dark:bg-black/90 backdrop-blur-md shadow-lg text-gray-700 dark:text-gray-200 border-gray-200 dark:border-zinc-800"
-      aria-label={t('theme')}
-    >
-      {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-    </button>
     <button
       onClick={() => setView('notifications')}
       className={cn(
@@ -2212,6 +2849,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   const { profile } = useAuth();
   const { showToast } = useToast();
   const { t } = useSettings();
+  const { readOnly } = useAppConfig();
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentsLimit, setCommentsLimit] = useState(40);
@@ -2247,10 +2885,10 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       orderBy('createdAt', 'asc'),
       limit(commentsLimit)
     );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
       setHasMoreComments(snapshot.size >= commentsLimit);
       setComments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment)));
-    });
+    }, 'Не удалось загрузить комментарии:');
     return unsubscribe;
   }, [showComments, post.id, commentsLimit]);
 
@@ -2293,11 +2931,18 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   const handleLike = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!profile) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
     try {
+      const currentLikedBy = post.likedBy || [];
       if (isLiked) {
-        await updateDoc(doc(db, 'posts', post.id), { likes: post.likes - 1 });
+        const nextLikedBy = currentLikedBy.filter(uid => uid !== profile.uid);
+        await updateDoc(doc(db, 'posts', post.id), { likes: nextLikedBy.length, likedBy: nextLikedBy });
       } else {
-        await updateDoc(doc(db, 'posts', post.id), { likes: post.likes + 1 });
+        const nextLikedBy = [...currentLikedBy, profile.uid];
+        await updateDoc(doc(db, 'posts', post.id), { likes: nextLikedBy.length, likedBy: nextLikedBy });
         
         // Create notification
         if (post.authorUid !== profile.uid) {
@@ -2306,6 +2951,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
             fromUid: profile.uid,
             fromName: profile.displayName,
             fromPhoto: profile.photoURL,
+            fromVerified: profile.verified === true,
             toUid: post.authorUid,
             postId: post.id,
             createdAt: serverTimestamp(),
@@ -2351,12 +2997,17 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     e.preventDefault();
     e.stopPropagation();
     if (!commentText.trim() || !profile) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
 
     try {
       const commentData: any = {
         authorUid: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
+        authorVerified: profile.verified === true,
         text: commentText.trim(),
         createdAt: serverTimestamp(),
         likes: 0,
@@ -2376,6 +3027,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           fromUid: profile.uid,
           fromName: profile.displayName,
           fromPhoto: profile.photoURL,
+          fromVerified: profile.verified === true,
           toUid: notifyUid,
           postId: post.id,
           createdAt: serverTimestamp(),
@@ -2392,6 +3044,10 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
 
   const handleDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
     if (window.confirm(t('deletePostConfirm'))) {
       try {
         await deleteDoc(doc(db, 'posts', post.id));
@@ -2405,6 +3061,10 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   const handleUpdate = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!editContent.trim()) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
     try {
       await updateDoc(doc(db, 'posts', post.id), { content: editContent.trim() });
       setIsEditing(false);
@@ -2430,6 +3090,10 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
 
   const handleCommentLike = async (commentId: string, currentLikes: number = 0, likedBy: string[] = []) => {
     if (!profile) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
     try {
       const isLiked = likedBy.includes(profile.uid);
       await updateDoc(doc(db, 'posts', post.id, 'comments', commentId), {
@@ -2469,6 +3133,10 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
 
   const handleConfirmRepost = async () => {
     if (!profile || isReposting) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
     setIsReposting(true);
     try {
       await addDoc(collection(db, 'posts'), {
@@ -2476,6 +3144,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
         authorUsername: profile.username ? normalizeUsername(profile.username) : '',
+        authorVerified: profile.verified === true,
         content: repostText.trim(),
         repostId: post.id,
         createdAt: serverTimestamp(),
@@ -2484,9 +3153,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         repostCount: 0
       });
       
-      await firestore.doc(awDb.DB_ID, 'posts', post.id).update({
-        repostCount: (post.repostCount || 0) + 1
-      });
+      await updateDoc(doc(db, 'posts', post.id), { repostCount: increment(1) });
 
       if (post.authorUid !== profile.uid) {
         await addDoc(collection(db, 'notifications'), {
@@ -2494,6 +3161,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           fromUid: profile.uid,
           fromName: profile.displayName,
           fromPhoto: profile.photoURL,
+          fromVerified: profile.verified === true,
           toUid: post.authorUid,
           postId: post.id,
           createdAt: serverTimestamp(),
@@ -2585,7 +3253,10 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         >
           <img src={post.authorPhoto || 'https://picsum.photos/seed/user/100/100'} className="w-11 h-11 rounded-full object-cover border border-gray-100 dark:border-zinc-800" referrerPolicy="no-referrer" />
           <div>
-            <div className="font-bold text-sm tracking-tight">{post.authorName}</div>
+            <div className="font-bold text-sm tracking-tight inline-flex items-center gap-1">
+              <span>{post.authorName}</span>
+              {post.authorVerified ? <VerifiedBadge title={t('verified')} /> : null}
+            </div>
             {post.authorUsername && (
               <div className="text-[10px] text-gray-400">{formatUsername(post.authorUsername)}</div>
             )}
@@ -2637,7 +3308,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       {post.repostId && repostedPost && (
         <div className="mb-4 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800 bg-gray-50/50 dark:bg-zinc-800/20">
           <div className="flex items-center gap-2 mb-2">
-            <img src={repostedPost.authorPhoto} className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" />
+            <img src={repostedPost.authorPhoto} loading="lazy" className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" />
             <span className="font-bold text-xs">{repostedPost.authorName}</span>
             {repostedPost.authorUsername && (
               <span className="text-[10px] text-gray-400">{formatUsername(repostedPost.authorUsername)}</span>
@@ -2742,11 +3413,12 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       )}
 
       {post.imageUrl && (!post.imageUrls || post.imageUrls.length === 0) && (
-        <div 
+        <div
           className="mb-4 rounded-2xl overflow-hidden border dark:border-zinc-800 bg-gray-50 dark:bg-zinc-800 cursor-zoom-in"
+          style={{ contentVisibility: 'auto', containIntrinsicSize: '500px' }}
           onClick={(e) => { e.stopPropagation(); onOpenImage?.(post.imageUrl!); }}
         >
-          <img src={post.imageUrl} className="w-full h-auto max-h-[400px] object-cover hover:scale-105 transition-transform duration-500" referrerPolicy="no-referrer" />
+          <img src={post.imageUrl} loading="lazy" className="w-full h-auto max-h-[400px] object-cover hover:scale-105 transition-transform duration-500" referrerPolicy="no-referrer" />
         </div>
       )}
       <div className="flex items-center justify-between text-gray-400 border-t dark:border-zinc-800 pt-4">
@@ -2931,15 +3603,88 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   key?: string 
 }) {
   const { t } = useSettings();
+  const { readOnly, legacyAnnouncement } = useAppConfig();
   const [posts, setPosts] = useState<Post[]>([]);
   const [postsLimit, setPostsLimit] = useState(20);
   const [hasMorePosts, setHasMorePosts] = useState(true);
-  const [content, setContent] = useState('');
-  const [imageUrls, setImageUrls] = useState<string[]>([]);
-  const [imageUrlInput, setImageUrlInput] = useState('');
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+   const [content, setContent] = useState('');
+   const [imageUrls, setImageUrls] = useState<string[]>([]);
+   const [imageUrlInput, setImageUrlInput] = useState('');
+   const [uploading, setUploading] = useState(false);
+   const [uploadProgress, setUploadProgress] = useState(0);
+   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
+   const [error, setError] = useState<string | null>(null);
+   const [listHeight, setListHeight] = useState(600);
+   const [showPollOptions, setShowPollOptions] = useState(false);
+   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
+   const [pollError, setPollError] = useState<string | null>(null);
+   const listContainerRef = useRef<HTMLDivElement>(null);
+   const [showAnnouncement, setShowAnnouncement] = useState(false);
+   const [announcement, setAnnouncement] = useState<AppAnnouncement | null>(null);
+   const [announcementSource, setAnnouncementSource] = useState<'collection' | 'config' | 'none'>('none');
+   const announcementsDeniedRef = useRef(false);
+   const announcementErrorLoggedRef = useRef(false);
+   const [dismissedAnnouncementId, setDismissedAnnouncementId] = useState<string | null>(() => {
+     try {
+       return localStorage.getItem('zimo_dismissed_announcement_id');
+     } catch {
+       return null;
+     }
+   });
+
+  useEffect(() => {
+    if (announcementsDeniedRef.current) return;
+    const qAnn = query(collection(db, 'announcements'), where('active', '==', true), limit(10));
+    let unsub = () => {};
+    unsub = onSnapshot(
+      qAnn,
+      (snap: any) => {
+        if (snap.empty) {
+          setAnnouncement(null);
+          setAnnouncementSource('none');
+          return;
+        }
+        const items = snap.docs.map((d: any) => ({ id: d.id, ...(d.data() as any) } as AppAnnouncement));
+        items.sort((a, b) => {
+          const aMs = a.createdAt?.toDate?.().getTime?.() ?? 0;
+          const bMs = b.createdAt?.toDate?.().getTime?.() ?? 0;
+          return bMs - aMs;
+        });
+        setAnnouncement(items[0] || null);
+        setAnnouncementSource('collection');
+      },
+      (err) => {
+        const code = String(err?.code || '');
+        if (code === 'permission-denied') {
+          announcementsDeniedRef.current = true;
+        } else if (!announcementErrorLoggedRef.current) {
+          announcementErrorLoggedRef.current = true;
+          console.error('Не удалось загрузить оповещение (feed):', err);
+        }
+        try {
+          unsub();
+        } catch {}
+        // Fallback to legacy config/app field if rules for `announcements` aren't deployed yet.
+        if (legacyAnnouncement && typeof legacyAnnouncement.title === 'string' && typeof legacyAnnouncement.body === 'string') {
+          setAnnouncement(legacyAnnouncement);
+          setAnnouncementSource('config');
+        } else {
+          setAnnouncement(null);
+          setAnnouncementSource('none');
+        }
+      }
+    );
+    return unsub;
+  }, [legacyAnnouncement?.id]);
+
+  useEffect(() => {
+    if (announcementSource === 'collection') return;
+    if (!legacyAnnouncement) return;
+    setAnnouncement(legacyAnnouncement);
+    setAnnouncementSource('config');
+  }, [legacyAnnouncement?.id]);
+
+  const hasAnnouncement = !!announcement?.id && announcement.id !== dismissedAnnouncementId;
 
   useEffect(() => {
     if (error) {
@@ -2950,7 +3695,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   const [feedTab, setFeedTab] = useState<'global' | 'following'>('global');
   const [searchHashtag, setSearchHashtag] = useState<string | null>(null);
   const [followingUids, setFollowingUids] = useState<string[]>([]);
-  const [privateAccountUids, setPrivateAccountUids] = useState<string[]>([]);
   const { profile } = useAuth();
 
   useEffect(() => {
@@ -2964,93 +3708,177 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     onClearHashtag?.();
   };
 
-  useEffect(() => {
-    if (!profile) return;
-    const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      // Only include approved follows
-      const approved = snapshot.docs
-        .map(doc => doc.data() as Follow)
-        .filter(f => f.status === 'approved')
-        .map(f => f.followingUid);
-      setFollowingUids(approved);
-    });
-    return unsubscribe;
-  }, [profile]);
-
-  // Load all users to get isPrivate status
-  useEffect(() => {
-    if (!profile) return;
-    const q = query(collection(db, 'users'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const privateUids = snapshot.docs
-        .map(doc => doc.data() as UserProfile)
-        .filter(u => u.isPrivate === true)
-        .map(u => u.uid);
-      console.log('Private accounts:', privateUids);
-      setPrivateAccountUids(privateUids);
-    });
-    return unsubscribe;
-  }, [profile]);
+	  useEffect(() => {
+	    if (!profile) return;
+	    const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
+	    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
+	      // Only include approved follows
+	      const approved = snapshot.docs
+	        .map(doc => doc.data() as Follow)
+	        .filter(f => f.status === 'approved')
+	        .map(f => f.followingUid);
+	      setFollowingUids(approved);
+	    }, 'Не удалось загрузить список подписок (feed):');
+	    return unsubscribe;
+	  }, [profile]);
 
   useEffect(() => {
     if (!profile) return;
-    let q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(postsLimit));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setHasMorePosts(snapshot.size >= postsLimit);
-      let allPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post));
-      
-      // Filter blocked users
-      if (profile?.blockedUsers && profile.blockedUsers.length > 0) {
-        allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
+    // Avoid permission-denied: never query a mixed set of documents where some are unreadable.
+    // Instead, fetch:
+    // - global: public posts + your own posts
+    // - following: public+followers posts from approved follows + your own posts
+    //
+    // This relies on `posts.visibility` being set to "public" or "followers".
+    const unsubscribers: Array<() => void> = [];
+
+    const blocked = Array.isArray(profile.blockedUsers) ? profile.blockedUsers : [];
+    const merged = new Map<string, Post>();
+
+    const commit = () => {
+      let all = Array.from(merged.values());
+
+      if (blocked.length > 0) {
+        all = all.filter(p => !blocked.includes(p.authorUid));
       }
 
-      // In 'global' tab: show all posts from public accounts
-      if (feedTab === 'global') {
-        allPosts = allPosts.filter(p => {
-          // Always show own posts
-          if (p.authorUid === profile?.uid) return true;
-          // Hide private accounts unless we follow them (approved)
-          if (privateAccountUids.includes(p.authorUid) && !followingUids.includes(p.authorUid)) return false;
-          // Show all other posts
-          return true;
-        });
-      }
-
-      // Filter by following if tab is following - now only approved follows are in followingUids
-      if (feedTab === 'following') {
-        allPosts = allPosts.filter(p => followingUids.includes(p.authorUid) || p.authorUid === profile?.uid);
-      }
-
-      // Filter by hashtag if search is active
       if (searchHashtag) {
-        allPosts = allPosts.filter(p => p.content.toLowerCase().includes(searchHashtag.toLowerCase()));
+        const q = searchHashtag.toLowerCase();
+        all = all.filter(p => (p.content || '').toLowerCase().includes(q));
       }
 
-      setPosts(allPosts);
-    });
-    return unsubscribe;
-  }, [feedTab, followingUids, profile, searchHashtag, privateAccountUids, postsLimit]);
+      all.sort((a, b) => {
+        const aMs = (a.createdAt && typeof (a.createdAt as any).toMillis === 'function')
+          ? (a.createdAt as any).toMillis()
+          : 0;
+        const bMs = (b.createdAt && typeof (b.createdAt as any).toMillis === 'function')
+          ? (b.createdAt as any).toMillis()
+          : 0;
+        return bMs - aMs;
+      });
 
-  const handlePost = async (e: React.FormEvent) => {
+      setPosts(all.slice(0, postsLimit));
+      setHasMorePosts(all.length >= postsLimit);
+    };
+
+    const mergeDocs = (docs: Array<{ id: string; data: () => any }>) => {
+      docs.forEach(d => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
+      commit();
+    };
+
+    const shouldStopListen = (err: any) => {
+      const code = String(err?.code || '');
+      return code === 'permission-denied' || code === 'failed-precondition';
+    };
+
+    const fetchLimit = Math.max(100, postsLimit * 3);
+
+    const safeOnSnapshot = (q: any, onNext: (snap: any) => void, onErrLabel: string) => {
+      let unsub = () => {};
+      unsub = onSnapshot(
+        q,
+        onNext,
+        (err) => {
+          console.error(onErrLabel, err);
+          if (shouldStopListen(err)) {
+            try {
+              unsub();
+            } catch {}
+          }
+        }
+      );
+      return unsub;
+    };
+
+    // Always include your own posts (so private accounts can see their own "followers" posts).
+    const ownQuery = query(
+      collection(db, 'posts'),
+      where('authorUid', '==', profile.uid),
+      limit(fetchLimit)
+    );
+    unsubscribers.push(safeOnSnapshot(ownQuery, (snapshot) => mergeDocs(snapshot.docs), 'Не удалось загрузить свои посты:'));
+
+    if (feedTab === 'global') {
+      const publicQuery = query(
+        collection(db, 'posts'),
+        where('visibility', '==', 'public'),
+        limit(fetchLimit)
+      );
+      unsubscribers.push(safeOnSnapshot(publicQuery, (snapshot) => mergeDocs(snapshot.docs), 'Не удалось загрузить публичные посты:'));
+    } else {
+      const authors = Array.from(new Set([profile.uid, ...followingUids])).filter(Boolean);
+      const authorChunks = chunkItems(authors, 30);
+
+      authorChunks.forEach((chunk) => {
+        // В режиме "подписки" мы слушаем посты только от авторов, на которых уже есть approved-follow.
+        // Значит, все их документы должны быть читаемы текущим пользователем (public и followers).
+        // Убираем orderBy/visibility, чтобы не требовать композитные индексы (пока у тебя нет прав деплоя).
+        const followingAuthorsQuery = query(
+          collection(db, 'posts'),
+          where('authorUid', 'in', chunk),
+          limit(fetchLimit)
+        );
+        unsubscribers.push(safeOnSnapshot(followingAuthorsQuery, (snapshot) => mergeDocs(snapshot.docs), 'Не удалось загрузить посты подписок:'));
+      });
+    }
+
+    return () => {
+      unsubscribers.forEach(fn => {
+        try {
+          fn();
+        } catch {}
+      });
+    };
+  }, [feedTab, followingUids, profile, searchHashtag, postsLimit]);
+
+   const handlePost = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (readOnly) {
+      setError(t('readOnlyMode'));
+      return;
+    }
     const trimmed = content.trim();
     const images = imageUrls.filter(url => url.trim() !== '');
-    if ((!trimmed && images.length === 0) || !profile || uploading) return;
+
+    // Validate poll if enabled
+    if (showPollOptions) {
+      const validOptions = pollOptions.filter(opt => opt.trim() !== '');
+      if (validOptions.length < 2) {
+        setPollError('At least 2 options required');
+        return;
+      }
+    }
+
+    if ((!trimmed && images.length === 0 && !showPollOptions) || !profile || uploading) return;
 
     try {
-      const postRef = await addDoc(collection(db, 'posts'), {
+      const postData: any = {
         authorUid: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
         authorUsername: profile.username ? normalizeUsername(profile.username) : '',
+        authorVerified: profile.verified === true,
+        visibility: profile.isPrivate ? 'followers' : 'public',
         content: trimmed,
         imageUrls: images,
         createdAt: serverTimestamp(),
         likes: 0,
         likedBy: []
-      });
+      };
+
+      // Add poll data if poll is enabled
+      if (showPollOptions) {
+        const validOptions = pollOptions.filter(opt => opt.trim() !== '');
+        postData.hasPoll = true;
+        postData.pollOptions = validOptions.map(opt => ({
+          text: opt.trim(),
+          votes: 0,
+          voters: [] as string[]
+        }));
+        postData.pollVotes = {}; // For real-time updates: {uid: optionIndex}
+      }
+
+      const postRef = await addDoc(collection(db, 'posts'), postData);
 
       // Fan-out "new post" notifications to followers who enabled post alerts.
       // This is MVP (client-side) and may not scale; later we should move it to a server/Cloud Function.
@@ -3071,6 +3899,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               fromUid: profile.uid,
               fromName: profile.displayName,
               fromPhoto: profile.photoURL,
+              fromVerified: profile.verified === true,
               toUid: f.followerUid,
               postId: postRef.id,
               createdAt: serverTimestamp(),
@@ -3082,6 +3911,9 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 
       setContent('');
       setImageUrls([]);
+      setShowPollOptions(false);
+      setPollOptions(['', '']);
+      setPollError(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'posts');
       setError(t('postFailed').replace('{error}', t('genericError')));
@@ -3093,87 +3925,171 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     const files = input.files;
     if (!files || files.length === 0 || !profile) return;
 
-    setUploading(true);
-    setUploadProgress(0);
-    const newUrls: string[] = [];
-
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        // GIFs must not be re-encoded to JPEG (we'd lose animation).
-        if (file.type === 'image/gif') {
-          if (file.size > MAX_GIF_BYTES) {
-            setError(t('gifTooLarge'));
-            continue;
-          }
-          if (!STORAGE_ENABLED) {
-            const dataUrl = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onerror = () => reject(new Error('file_read_failed'));
-              reader.onload = () => resolve(reader.result as string);
-              reader.readAsDataURL(file);
-            });
-            newUrls.push(dataUrl);
-            setUploadProgress(Math.round(((i + 1) / files.length) * 100));
-            continue;
-          }
-          try {
-            const filename = `posts/${profile.uid}/${Date.now()}_${i}.gif`;
-            const url = await uploadBlobToStorage(filename, file, (pct) => {
-              const overall = ((i + pct / 100) / files.length) * 100;
-              setUploadProgress(overall);
-            });
-            newUrls.push(url);
-          } catch (err) {
-            const msg = getStorageErrorMessage(err, t);
-            setError(`${t('uploadFailed')}: ${msg}`);
-            const dataUrl = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onerror = () => reject(new Error('file_read_failed'));
-              reader.onload = () => resolve(reader.result as string);
-              reader.readAsDataURL(file);
-            });
-            newUrls.push(dataUrl);
-          }
+    // File validation
+    const validFiles: File[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      
+      // Check file type
+      if (!file.type.startsWith('image/')) {
+        setError(t('invalidFileType'));
+        continue;
+      }
+      
+      // Check file count limit
+      if (uploadTasks.length + validFiles.length >= 10) {
+        setError(t('tooManyFiles'));
+        break;
+      }
+      
+      // Check individual file size (before compression)
+      if (file.type === 'image/gif') {
+        if (file.size > MAX_GIF_BYTES) {
+          setError(t('gifTooLarge'));
           continue;
         }
-        const { dataUrl, bytes } = await readAndCompressImage(file);
-        if (bytes > MAX_IMAGE_BYTES) {
-          setError(t('imageTooLarge'));
+      } else {
+        if (file.size > 20 * 1024 * 1024) { // 20MB pre-compression limit
+          setError(t('fileTooLarge'));
           continue;
-        }
-        if (!STORAGE_ENABLED) {
-          newUrls.push(dataUrl);
-          setUploadProgress(Math.round(((i + 1) / files.length) * 100));
-          continue;
-        }
-
-        try {
-          const blob = await dataUrlToBlob(dataUrl);
-          const filename = `posts/${profile.uid}/${Date.now()}_${i}.jpg`;
-          const url = await uploadBlobToStorage(filename, blob, (pct) => {
-            const overall = ((i + pct / 100) / files.length) * 100;
-            setUploadProgress(overall);
-          });
-          newUrls.push(url);
-        } catch (err) {
-          // If Storage isn't configured (rules, bucket, etc.), don't block posting entirely.
-          const msg = getStorageErrorMessage(err, t);
-          setError(`${t('uploadFailed')}: ${msg}`);
-          newUrls.push(dataUrl);
-          setUploadProgress(Math.round(((i + 1) / files.length) * 100));
         }
       }
-      setImageUrls(prev => [...prev, ...newUrls]);
-    } catch (err) {
-      const msg = getImageErrorMessage(err, t);
-      setError(`${t('uploadFailed')}: ${msg}`);
-    } finally {
-      setUploading(false);
-      setUploadProgress(0);
-      // Allow picking the same file again.
-      input.value = '';
+      
+      validFiles.push(file);
     }
+
+    if (validFiles.length === 0) {
+      input.value = '';
+      return;
+    }
+
+    // Create upload tasks with previews
+    const newTasks: UploadTask[] = [];
+    for (const file of validFiles) {
+      const preview = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('preview_failed'));
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsDataURL(file);
+      });
+
+      const task: UploadTask = {
+        id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        file,
+        preview,
+        progress: 0,
+        status: 'pending',
+      };
+      newTasks.push(task);
+    }
+
+    setUploadTasks(prev => [...prev, ...newTasks]);
+    setUploading(true);
+    setError(null);
+
+    // Semaphore for concurrent uploads
+    const semaphore = new Array(MAX_CONCURRENT_UPLOADS).fill(null);
+    let currentIndex = 0;
+
+    const runTask = async (task: UploadTask) => {
+      // Update status to uploading
+      setUploadTasks(prev => prev.map(t => 
+        t.id === task.id ? { ...t, status: 'uploading' as const } : t
+      ));
+
+      try {
+        let resultUrl: string;
+        
+        if (task.file.type === 'image/gif') {
+          // GIF handling (no compression)
+          if (!STORAGE_ENABLED) {
+            resultUrl = task.preview;
+          } else {
+            const filename = `posts/${profile.uid}/${Date.now()}_${task.id}.gif`;
+            resultUrl = await uploadBlobToStorage(filename, task.file, (pct) => {
+              setUploadTasks(prev => prev.map(t => 
+                t.id === task.id ? { ...t, progress: pct } : t
+              ));
+            });
+          }
+        } else {
+          // Regular image with compression
+          const { dataUrl, bytes } = await readAndCompressImage(task.file);
+          if (bytes > MAX_IMAGE_BYTES) {
+            throw new Error('image_too_large_after_compression');
+          }
+          
+          if (!STORAGE_ENABLED) {
+            resultUrl = dataUrl;
+          } else {
+            const blob = await dataUrlToBlob(dataUrl);
+            const filename = `posts/${profile.uid}/${Date.now()}_${task.id}.jpg`;
+            resultUrl = await uploadBlobToStorage(filename, blob, (pct) => {
+              setUploadTasks(prev => prev.map(t => 
+                t.id === task.id ? { ...t, progress: pct } : t
+              ));
+            });
+          }
+        }
+
+        // Mark as completed
+        setUploadTasks(prev => prev.map(t => 
+          t.id === task.id ? { ...t, status: 'completed' as const, progress: 100 } : t
+        ));
+        
+        // Add to imageUrls
+        setImageUrls(prev => [...prev, resultUrl]);
+
+      } catch (err: any) {
+        console.error('Upload error:', err);
+        let errorMsg = t('uploadFailed');
+        if (err.message === 'upload_timeout') {
+          errorMsg = t('uploadTimeout');
+        } else if (err.message === 'image_too_large_after_compression') {
+          errorMsg = t('imageTooLarge');
+        } else if (err.message === 'preview_failed') {
+          errorMsg = t('previewFailed');
+        } else if (err.code?.startsWith('storage/')) {
+          errorMsg = getStorageErrorMessage(err, t);
+        }
+        
+        setUploadTasks(prev => prev.map(t => 
+          t.id === task.id ? { ...t, status: 'error' as const, error: errorMsg } : t
+        ));
+        setError(errorMsg);
+      } finally {
+        // Release semaphore
+        semaphore.pop();
+        // Start next pending task if available
+        if (currentIndex < newTasks.length) {
+          const nextTask = newTasks[currentIndex];
+          currentIndex++;
+          semaphore.push(null);
+          runTask(nextTask);
+        } else {
+          // Check if all tasks are done
+          const allDone = newTasks.every(t => 
+            t.status === 'completed' || t.status === 'error' || t.status === 'cancelled'
+          );
+          if (allDone) {
+            setUploading(false);
+          }
+        }
+      }
+    };
+
+    // Start initial batch of concurrent uploads
+    const initialBatch = newTasks.slice(0, MAX_CONCURRENT_UPLOADS);
+    currentIndex = initialBatch.length;
+    const promises = initialBatch.map(task => runTask(task));
+
+    // Cleanup on unmount or new upload
+    return () => {
+      // Cancel all running tasks if needed
+      setUploadTasks(prev => prev.map(t => 
+        newTasks.some(nt => nt.id === t.id) ? { ...t, status: 'cancelled' as const } : t
+      ));
+    };
   };
 
   const addImageUrl = () => {
@@ -3192,13 +4108,35 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   };
 
   const clearImages = () => {
+    // Cancel all pending/uploading tasks
+    setUploadTasks(prev => prev.map(task => 
+      task.status === 'pending' || task.status === 'uploading'
+        ? { ...task, status: 'cancelled' as const }
+        : task
+    ));
+    // Remove completed/error tasks after a delay
+    setTimeout(() => {
+      setUploadTasks(prev => prev.filter(task => 
+        task.status !== 'completed' && task.status !== 'error'
+      ));
+    }, 3000);
     setImageUrls([]);
     if (uploading) {
-      // We can't easily cancel the uploadTask without keeping a ref to it, 
-      // but we can at least clear the UI state.
       setUploading(false);
       setUploadProgress(0);
     }
+  };
+
+  const cancelUpload = (taskId: string) => {
+    setUploadTasks(prev => prev.map(task => 
+      task.id === taskId 
+        ? { ...task, status: 'cancelled' as const }
+        : task
+    ));
+  };
+
+  const removeUploadTask = (taskId: string) => {
+    setUploadTasks(prev => prev.filter(task => task.id !== taskId));
   };
 
   const getTrendingHashtags = () => {
@@ -3267,6 +4205,28 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           </div>
         )}
 
+        {hasAnnouncement && announcement && (
+          <div className="mb-6">
+            <button
+              type="button"
+              onClick={() => setShowAnnouncement(true)}
+              className="w-full text-left bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/20 rounded-2xl p-4 flex items-center justify-between gap-3 hover:opacity-95 transition-opacity"
+            >
+              <div className="min-w-0">
+                <div className="text-[10px] font-bold text-amber-700 dark:text-amber-300 uppercase tracking-[0.24em]">
+                  {t('announcement')}
+                </div>
+                <div className="text-sm font-bold text-amber-900 dark:text-amber-100 truncate mt-1">
+                  {announcement.title}
+                </div>
+              </div>
+              <div className="shrink-0 text-amber-800 dark:text-amber-200">
+                <Info size={18} />
+              </div>
+            </button>
+          </div>
+        )}
+
         <div className="flex gap-4 mb-8 border-b dark:border-zinc-800">
           <button 
             onClick={() => setFeedTab('global')}
@@ -3288,6 +4248,62 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           </button>
         </div>
 
+        <AnimatePresence>
+          {showAnnouncement && announcement && (
+            <motion.div
+              key="announcement_modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[250] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+              onClick={() => setShowAnnouncement(false)}
+            >
+              <motion.div
+                initial={{ y: 12, opacity: 0, scale: 0.98 }}
+                animate={{ y: 0, opacity: 1, scale: 1 }}
+                exit={{ y: 12, opacity: 0, scale: 0.98 }}
+                transition={{ duration: 0.18 }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-md bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl p-5 shadow-xl"
+              >
+                <div className="flex items-start justify-between gap-4 mb-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">
+                      {t('announcement')}
+                    </div>
+                    <div className="text-lg font-bold mt-1">{announcement.title}</div>
+                  </div>
+                  <button
+                    onClick={() => setShowAnnouncement(false)}
+                    className="p-2 rounded-full hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                    aria-label={t('close')}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="text-sm text-gray-600 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                  {announcement.body}
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        localStorage.setItem('zimo_dismissed_announcement_id', announcement.id);
+                      } catch {}
+                      setDismissedAnnouncementId(announcement.id);
+                      setShowAnnouncement(false);
+                    }}
+                    className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    {t('dismiss')}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <form onSubmit={handlePost} className="mb-8 bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800 shadow-sm">
           <textarea
             value={content}
@@ -3297,18 +4313,80 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             maxLength={1000}
           />
           
-          {imageUrls.length > 0 && (
+          {/* Upload previews with progress */}
+          {(uploadTasks.length > 0 || imageUrls.length > 0) && (
             <div className="grid grid-cols-2 gap-2 mt-2 mb-4">
+              {/* Show completed images */}
               {imageUrls.map((url, idx) => (
-                <div key={idx} className="relative group">
-                  <img src={url} className="w-full h-32 object-cover rounded-xl border dark:border-zinc-800" referrerPolicy="no-referrer" />
+                <div key={`completed-${idx}`} className="relative group">
+                  <img src={url} loading="lazy" className="w-full h-32 object-cover rounded-xl border dark:border-zinc-800" referrerPolicy="no-referrer" />
                   <button 
                     type="button"
                     onClick={() => removeImageUrl(idx)}
-                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black transition-colors"
+                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black transition-colors opacity-0 group-hover:opacity-100"
                   >
                     <X size={14} />
                   </button>
+                </div>
+              ))}
+              
+              {/* Show uploading tasks */}
+              {uploadTasks.map((task) => (
+                <div key={task.id} className="relative group">
+                  <img src={task.preview} loading="lazy" className="w-full h-32 object-cover rounded-xl border dark:border-zinc-800 opacity-75" alt="Uploading..." />
+                  
+                  {/* Progress bar */}
+                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200 dark:bg-zinc-700 rounded-b-xl overflow-hidden">
+                    <div 
+                      className="h-full bg-blue-500 transition-all duration-300"
+                      style={{ width: `${task.progress}%` }}
+                    />
+                  </div>
+                  
+                  {/* Status overlay */}
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-xl">
+                    {task.status === 'uploading' && (
+                      <span className="text-white text-xs font-bold bg-black/50 px-2 py-1 rounded">
+                        {Math.round(task.progress)}%
+                      </span>
+                    )}
+                    {task.status === 'error' && (
+                      <div className="text-center">
+                        <span className="text-red-400 text-xs font-bold block mb-1">!</span>
+                        {task.error && (
+                          <span className="text-red-300 text-[10px] block max-w-[80px] truncate" title={task.error}>
+                            {task.error}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {task.status === 'cancelled' && (
+                      <span className="text-yellow-400 text-xs font-bold">Cancelled</span>
+                    )}
+                  </div>
+                  
+                  {/* Cancel button */}
+                  {(task.status === 'pending' || task.status === 'uploading') && (
+                    <button 
+                      type="button"
+                      onClick={() => cancelUpload(task.id)}
+                      className="absolute top-2 right-2 p-1 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors opacity-0 group-hover:opacity-100"
+                      title="Cancel upload"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                  
+                  {/* Remove completed/error tasks */}
+                  {(task.status === 'completed' || task.status === 'error') && (
+                    <button 
+                      type="button"
+                      onClick={() => removeUploadTask(task.id)}
+                      className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black transition-colors opacity-0 group-hover:opacity-100"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -3318,18 +4396,26 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             <div className="flex items-center gap-2">
               <label className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors flex items-center gap-1 cursor-pointer">
                 <ImageIcon size={20} />
-                <input 
-                  type="file" 
-                  multiple 
-                  accept="image/*" 
-                  className="hidden" 
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  className="hidden"
                   onChange={handleFileChange}
                   disabled={uploading}
                 />
                 {imageUrls.length > 0 && <span className="text-xs font-bold">{imageUrls.length}</span>}
               </label>
+              <button
+                type="button"
+                onClick={() => setShowPollOptions(!showPollOptions)}
+                className={`p-2 transition-colors ${showPollOptions ? 'text-blue-500' : 'text-gray-400 hover:text-black dark:hover:text-white'}`}
+                title="Add poll"
+              >
+                <BarChart2 size={20} />
+              </button>
               {imageUrls.length > 0 && !uploading && (
-                <button 
+                <button
                   type="button"
                   onClick={clearImages}
                   className="text-[10px] font-bold uppercase tracking-widest text-red-500 hover:underline"
@@ -3340,6 +4426,48 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               {uploading && <div className="w-4 h-4 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />}
               <span className="text-xs text-gray-400">{content.length}/1000</span>
             </div>
+
+            {/* Poll options */}
+            {showPollOptions && (
+              <div className="flex flex-col gap-2 mt-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-gray-500 dark:text-gray-400">Poll options</span>
+                  <button
+                    type="button"
+                    onClick={() => setPollOptions([...pollOptions, ''])}
+                    className="text-xs text-blue-500 hover:text-blue-600 font-medium"
+                  >
+                    + Add option
+                  </button>
+                </div>
+                {pollOptions.map((option, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={option}
+                      onChange={(e) => {
+                        const newOptions = [...pollOptions];
+                        newOptions[idx] = e.target.value;
+                        setPollOptions(newOptions);
+                      }}
+                      placeholder={`Option ${idx + 1}`}
+                      maxLength={50}
+                      className="flex-1 bg-gray-50 dark:bg-zinc-800 rounded-full px-4 py-2 text-xs focus:outline-none border dark:border-zinc-700"
+                    />
+                    {pollOptions.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => setPollOptions(pollOptions.filter((_, i) => i !== idx))}
+                        className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                      >
+                        <X size={16} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {pollError && <p className="text-xs text-red-500">{pollError}</p>}
+              </div>
+            )}
 
             {!STORAGE_ENABLED && (
               <div className="flex gap-2">
@@ -3433,7 +4561,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   );
 }
 
-function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, onOpenImage, onShowLikes }: { 
+function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, onOpenImage, onShowLikes, onOpenAdmin }: { 
   userId?: string, 
   onOpenPost: (post: Post) => void, 
   onOpenProfile?: (uid: string) => void, 
@@ -3441,11 +4569,14 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   onBack?: () => void,
   onOpenImage: (url: string) => void,
   onShowLikes: (postId: string) => void,
+  onOpenAdmin?: () => void,
   key?: string
 }) {
-  const { darkMode, setDarkMode, language, setLanguage, notificationsEnabled, setNotificationsEnabled, toastsEnabled, setToastsEnabled, t } = useSettings();
+  const { darkMode, setDarkMode, language, setLanguage, notificationsEnabled, setNotificationsEnabled, toastsEnabled, setToastsEnabled, verificationNotificationsEnabled, setVerificationNotificationsEnabled, t } = useSettings();
   const { profile: currentProfile, logout } = useAuth();
+  const { readOnly, isAdmin } = useAppConfig();
   const { showToast } = useToast();
+  const { addVerificationNotification } = useVerificationNotifications();
   const [targetProfile, setTargetProfile] = useState<UserProfile | null>(null);
   const [userPosts, setUserPosts] = useState<Post[]>([]);
   const [isEditing, setIsEditing] = useState(false);
@@ -3475,6 +4606,22 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [activeTab, setActiveTab] = useState<'posts' | 'followers' | 'following' | 'settings'>('posts');
   const [followerProfiles, setFollowerProfiles] = useState<UserProfile[]>([]);
   const [followingProfiles, setFollowingProfiles] = useState<UserProfile[]>([]);
+  const [verificationRequestStatus, setVerificationRequestStatus] = useState<'none' | 'pending' | 'approved' | 'rejected'>('none');
+  const [showVerificationWizard, setShowVerificationWizard] = useState(false);
+  const [verificationStep, setVerificationStep] = useState<0 | 1 | 2>(0);
+  const [verificationCategory, setVerificationCategory] = useState<'popular' | 'personal' | 'brand' | 'other'>('popular');
+  const [verificationReason, setVerificationReason] = useState('');
+  const [verificationEvidenceLinks, setVerificationEvidenceLinks] = useState<string[]>([]);
+  const [showVerifiedInfo, setShowVerifiedInfo] = useState(false);
+  const [showVerifiedHow, setShowVerifiedHow] = useState(false);
+  const [animateVerifiedBadge, setAnimateVerifiedBadge] = useState(false);
+
+  useEffect(() => {
+    if (!targetProfile?.verified) return;
+    setAnimateVerifiedBadge(true);
+    const tmr = window.setTimeout(() => setAnimateVerifiedBadge(false), 1200);
+    return () => window.clearTimeout(tmr);
+  }, [targetProfile?.uid, targetProfile?.verified]);
 
   useEffect(() => {
     if (error) {
@@ -3485,6 +4632,20 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
   const effectiveUid = userId || currentProfile?.uid;
   const isOwnProfile = currentProfile?.uid === effectiveUid;
+
+  useEffect(() => {
+    if (!isOwnProfile || !currentProfile) return;
+    const reqRef = doc(db, 'verificationRequests', currentProfile.uid);
+    const unsub = safeOnSnapshot(reqRef, (snap: any) => {
+      if (!snap.exists()) {
+        setVerificationRequestStatus('none');
+        return;
+      }
+      const data = snap.data() as { status?: 'pending' | 'approved' | 'rejected' };
+      setVerificationRequestStatus(data.status || 'pending');
+    }, 'Не удалось загрузить статус верификации:');
+    return unsub;
+  }, [isOwnProfile, currentProfile?.uid]);
 
   useEffect(() => {
     if (!effectiveUid) return;
@@ -3502,20 +4663,23 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
     fetchProfile();
 
-    const q = query(
-      collection(db, 'posts'), 
-      where('authorUid', '==', effectiveUid),
-      orderBy('createdAt', 'desc')
-    );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setUserPosts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post)));
+    // Без индекса: убираем orderBy(createdAt). Сортируем на клиенте.
+    const q = query(collection(db, 'posts'), where('authorUid', '==', effectiveUid), limit(200));
+    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
+      const posts = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() } as Post));
+      posts.sort((a, b) => {
+        const aMs = (a.createdAt && typeof (a.createdAt as any).toMillis === 'function') ? (a.createdAt as any).toMillis() : 0;
+        const bMs = (b.createdAt && typeof (b.createdAt as any).toMillis === 'function') ? (b.createdAt as any).toMillis() : 0;
+        return bMs - aMs;
+      });
+      setUserPosts(posts);
       setLoading(false);
-    });
+    }, 'Не удалось загрузить посты профиля:');
 
     const followersQ = query(collection(db, 'follows'), where('followingUid', '==', effectiveUid));
     const followingQ = query(collection(db, 'follows'), where('followerUid', '==', effectiveUid));
     
-    const unsubFollowing = onSnapshot(followingQ, (s) => {
+    const unsubFollowing = safeOnSnapshot(followingQ, (s: any) => {
       const approvedFollows = s.docs
         .map(d => d.data() as Follow)
         .filter(f => f.status === 'approved');
@@ -3527,9 +4691,9 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       } else {
         setFollowingProfiles([]);
       }
-    });
+    }, 'Не удалось загрузить подписки профиля:');
 
-    const unsubFollowers = onSnapshot(followersQ, (s) => {
+    const unsubFollowers = safeOnSnapshot(followersQ, (s: any) => {
       const approvedFollowers = s.docs
         .map(d => d.data() as Follow)
         .filter(f => f.status === 'approved');
@@ -3541,11 +4705,11 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       } else {
         setFollowerProfiles([]);
       }
-    });
+    }, 'Не удалось загрузить подписчиков профиля:');
 
     if (currentProfile && effectiveUid !== currentProfile.uid) {
       const followRef = doc(db, 'follows', currentProfile.uid + '_' + effectiveUid);
-      const unsubFollowStatus = onSnapshot(followRef, (doc) => {
+      const unsubFollowStatus = safeOnSnapshot(followRef, (doc: any) => {
         if (!doc.exists()) {
           setIsFollowing(false);
           setFollowRequested(false);
@@ -3556,7 +4720,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
           setFollowRequested(data?.status === 'pending');
           setPostAlertsEnabled(!!data?.postNotifications);
         }
-      });
+      }, 'Не удалось загрузить статус подписки:');
       return () => {
         unsubscribe();
         unsubFollowers();
@@ -3624,12 +4788,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       }
       let avatarValue = dataUrl;
       if (STORAGE_ENABLED) {
-        try {
-          avatarValue = await uploadBlobToStorage(
-            `profiles/${currentProfile.uid}/avatar.jpg`,
-            await dataUrlToBlob(dataUrl),
-            setAvatarProgress
-          );
+          try {
+            avatarValue = await uploadBlobToStorage(
+              `profiles/${currentProfile.uid}/avatar.jpg`,
+              await dataUrlToBlob(dataUrl),
+              setAvatarProgress,
+              300000 // 5 minutes
+            );
         } catch (err) {
           setError(t('avatarUploadFailed').replace('{error}', getStorageErrorMessage(err, t)));
           avatarValue = dataUrl;
@@ -3666,12 +4831,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       }
       let headerValue = dataUrl;
       if (STORAGE_ENABLED) {
-        try {
-          headerValue = await uploadBlobToStorage(
-            `profiles/${currentProfile.uid}/header.jpg`,
-            await dataUrlToBlob(dataUrl),
-            setHeaderProgress
-          );
+          try {
+            headerValue = await uploadBlobToStorage(
+              `profiles/${currentProfile.uid}/header.jpg`,
+              await dataUrlToBlob(dataUrl),
+              setHeaderProgress,
+              300000 // 5 minutes
+            );
         } catch (err) {
           setError(t('headerUploadFailed').replace('{error}', getStorageErrorMessage(err, t)));
           headerValue = dataUrl;
@@ -3692,6 +4858,10 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
   const handleSaveProfile = async () => {
     if (!currentProfile) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
     if (!editName.trim()) {
       setError(t('namePlaceholder'));
       return;
@@ -3720,6 +4890,74 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     }
   };
 
+  const openVerificationWizard = () => {
+    if (!currentProfile) return;
+    if (currentProfile.verified) return;
+    if (verificationRequestStatus === 'pending') return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
+    setVerificationStep(0);
+    setVerificationCategory('popular');
+    setVerificationReason('');
+    setVerificationEvidenceLinks([]);
+    setShowVerificationWizard(true);
+  };
+
+  useEffect(() => {
+    if (!isOwnProfile) return;
+    if (!currentProfile) return;
+    try {
+      const flag = localStorage.getItem('zimo_open_verification') === '1';
+      if (!flag) return;
+      localStorage.removeItem('zimo_open_verification');
+      openVerificationWizard();
+    } catch {}
+  }, [isOwnProfile, currentProfile?.uid, verificationRequestStatus, readOnly]);
+
+  const submitVerificationRequest = async () => {
+    if (!currentProfile) return;
+    try {
+      const evidenceLinks = verificationEvidenceLinks
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 3);
+
+      await setDoc(
+        doc(db, 'verificationRequests', currentProfile.uid),
+        {
+          uid: currentProfile.uid,
+          displayName: currentProfile.displayName,
+          createdAt: serverTimestamp(),
+          status: 'pending',
+          category: verificationCategory,
+          reason: verificationReason.trim(),
+          evidenceLinks,
+        },
+        { merge: true }
+      );
+      setVerificationRequestStatus('pending');
+      setShowVerificationWizard(false);
+      // Create notification for verification request sent
+      await addDoc(collection(db, 'notifications'), {
+        type: 'verification_request_sent',
+        toUid: currentProfile.uid,
+        read: false,
+        createdAt: serverTimestamp(),
+      }).catch(() => {});
+      showToast(t('verificationRequested'), 'success');
+      // Show in-app banner notification
+      addVerificationNotification({
+        type: 'sent',
+        title: t('verificationRequested'),
+        message: t('verificationRequestSentNotification'),
+      });
+    } catch (err) {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
   const updatePushPrefs = async (patch: Partial<NonNullable<UserProfile['pushPrefs']>>) => {
     if (!currentProfile) return;
     setPushPrefs(prev => {
@@ -3731,6 +4969,10 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
   const handleFollow = async () => {
     if (!currentProfile || !effectiveUid) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
     const followId = currentProfile.uid + '_' + effectiveUid;
     if (isFollowing || followRequested) {
       await deleteDoc(doc(db, 'follows', followId));
@@ -3751,6 +4993,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         fromUid: currentProfile.uid,
         fromName: currentProfile.displayName,
         fromPhoto: currentProfile.photoURL,
+        fromVerified: currentProfile.verified === true,
         toUid: effectiveUid,
         createdAt: serverTimestamp(),
         read: false
@@ -3874,7 +5117,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       <div className="relative mb-16">
         <div className="h-40 w-full bg-gray-100 dark:bg-zinc-800 rounded-3xl overflow-hidden relative group border border-gray-100 dark:border-zinc-800 shadow-sm">
           {targetProfile.headerURL ? (
-            <img src={targetProfile.headerURL} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+            <img src={targetProfile.headerURL} loading="lazy" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
           ) : (
             <div className="w-full h-full bg-gradient-to-br from-gray-50 to-gray-100 dark:from-zinc-800 dark:to-zinc-900" />
           )}
@@ -3931,7 +5174,22 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       )}
 
       <div className="text-center mb-12">
-        <h1 className="text-2xl font-bold tracking-tight">{targetProfile.displayName}</h1>
+        <h1 className="text-2xl font-bold tracking-tight inline-flex items-center justify-center gap-2">
+          <span>{targetProfile.displayName}</span>
+          {targetProfile.verified ? (
+            <button
+              type="button"
+              onClick={() => {
+                setShowVerifiedHow(false);
+                setShowVerifiedInfo(true);
+              }}
+              className="inline-flex items-center"
+              aria-label={t('verifiedInfoTitle')}
+            >
+              <VerifiedBadge title={t('verified')} animate={animateVerifiedBadge} />
+            </button>
+          ) : null}
+        </h1>
         {usernameDisplay && (
           <p className="text-gray-500 text-sm mt-1">{usernameDisplay}</p>
         )}
@@ -4127,9 +5385,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   onClick={() => onOpenProfile?.(u.uid)}
                   className="flex items-center gap-3 hover:opacity-80 transition-opacity"
                 >
-                  <img src={u.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
+                  <img src={u.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="text-left">
-                    <div className="font-bold text-sm">{u.displayName}</div>
+                    <div className="font-bold text-sm inline-flex items-center gap-1">
+                      <span>{u.displayName}</span>
+                      {u.verified ? <VerifiedBadge title={t('verified')} /> : null}
+                    </div>
                     <div className="text-[10px] text-gray-400 uppercase tracking-widest">{getUserSecondaryLabel(u, currentProfile?.uid, t)}</div>
                   </div>
                 </button>
@@ -4155,9 +5416,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   onClick={() => onOpenProfile?.(u.uid)}
                   className="flex items-center gap-3 hover:opacity-80 transition-opacity"
                 >
-                  <img src={u.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
+                  <img src={u.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="text-left">
-                    <div className="font-bold text-sm">{u.displayName}</div>
+                    <div className="font-bold text-sm inline-flex items-center gap-1">
+                      <span>{u.displayName}</span>
+                      {u.verified ? <VerifiedBadge title={t('verified')} /> : null}
+                    </div>
                     <div className="text-[10px] text-gray-400 uppercase tracking-widest">{getUserSecondaryLabel(u, currentProfile?.uid, t)}</div>
                   </div>
                 </button>
@@ -4177,6 +5441,19 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
             exit={{ opacity: 0, y: -10 }}
             className="space-y-4"
           >
+            {isAdmin && onOpenAdmin && (
+              <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+                <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('adminPanel')}</div>
+                <button
+                  onClick={onOpenAdmin}
+                  className="w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold"
+                >
+                  {t('adminPanel')}
+                </button>
+                <div className="mt-2 text-[10px] text-gray-400 truncate">UID: {currentProfile?.uid}</div>
+              </div>
+            )}
+
             <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
               <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('profileInfo')}</div>
               <div className="space-y-3">
@@ -4263,6 +5540,32 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   {savingProfile ? t('uploading') : t('save')}
                 </button>
               </div>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('verification')}</div>
+              {targetProfile.verified ? (
+                <div className="flex items-center gap-2 text-sm font-bold">
+                  <VerifiedBadge title={t('verified')} />
+                  <span>{t('verified')}</span>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-[11px] text-gray-400">{t('verificationHint')}</div>
+                  <button
+                    onClick={openVerificationWizard}
+                    disabled={verificationRequestStatus === 'pending'}
+                    className={cn(
+                      "w-full py-2 rounded-xl text-xs font-bold border transition-colors disabled:opacity-60",
+                      verificationRequestStatus === 'pending'
+                        ? "border-gray-200 dark:border-zinc-700 text-gray-500"
+                        : "border-blue-200 dark:border-blue-900 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                    )}
+                  >
+                    {verificationRequestStatus === 'pending' ? t('verificationPending') : t('requestVerification')}
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
@@ -4409,6 +5712,24 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   </button>
                 </div>
               </div>
+
+             <div className="flex items-center justify-between">
+               <div>
+                 <div className="font-bold text-sm">{t('verificationNotifications')}</div>
+                 <div className="text-xs text-gray-400">{t('verificationNotificationsHint')}</div>
+               </div>
+               <button
+                 onClick={() => setVerificationNotificationsEnabled(!verificationNotificationsEnabled)}
+                 className={cn(
+                   "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                   verificationNotificationsEnabled
+                     ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                     : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                 )}
+               >
+                 {verificationNotificationsEnabled ? t('on') : t('off')}
+               </button>
+             </div>
             </div>
 
             <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
@@ -4468,6 +5789,239 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
           </motion.div>
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {showVerifiedInfo && targetProfile?.verified && (
+          <motion.div
+            key="verified_info"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+            onClick={() => setShowVerifiedInfo(false)}
+          >
+            <motion.div
+              initial={{ y: 12, opacity: 0, scale: 0.98 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: 12, opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.18 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl p-5 shadow-xl"
+            >
+              <div className="flex items-start justify-between gap-4 mb-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">
+                    {t('verified')}
+                  </div>
+                  <div className="text-lg font-bold mt-1 inline-flex items-center gap-2">
+                    <span>{t('verifiedInfoTitle')}</span>
+                    <VerifiedBadge title={t('verified')} />
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowVerifiedInfo(false)}
+                  className="p-2 rounded-full hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                  aria-label={t('close')}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="text-sm text-gray-600 dark:text-gray-300">
+                {t('verifiedInfoText')}
+              </div>
+
+              {showVerifiedHow && (
+                <div className="mt-3 rounded-2xl border border-gray-100 dark:border-zinc-800 p-3 text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                  {t('verificationHint')}
+                </div>
+              )}
+
+              <div className="mt-4 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (currentProfile && currentProfile.verified !== true) {
+                      setShowVerifiedInfo(false);
+                      if (isOwnProfile) {
+                        openVerificationWizard();
+                        return;
+                      }
+                      if (onOpenProfile) {
+                        try {
+                          localStorage.setItem('zimo_open_verification', '1');
+                        } catch {}
+                        onOpenProfile(currentProfile.uid);
+                        showToast(t('openYourProfileToVerify'), 'info');
+                      }
+                      return;
+                    }
+                    setShowVerifiedHow((v) => !v);
+                  }}
+                  className="w-full py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  {t('howItWorks')}
+                </button>
+
+                {currentProfile && currentProfile.verified !== true && onOpenProfile && !isOwnProfile && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowVerifiedInfo(false);
+                      try {
+                        localStorage.setItem('zimo_open_verification', '1');
+                      } catch {}
+                      onOpenProfile(currentProfile.uid);
+                      showToast(t('openYourProfileToVerify'), 'info');
+                    }}
+                    className="w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold"
+                  >
+                    {t('requestVerification')}
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+        {showVerificationWizard && isOwnProfile && currentProfile && (
+          <motion.div
+            key="verify_wizard"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+            onClick={() => setShowVerificationWizard(false)}
+          >
+            <motion.div
+              initial={{ y: 12, opacity: 0, scale: 0.98 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: 12, opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.18 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl p-5 shadow-xl"
+            >
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div>
+                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">{t('verificationFlowTitle')}</div>
+                  <div className="text-lg font-bold mt-1">{t('verificationFlowTitle')}</div>
+                </div>
+                <button
+                  onClick={() => setShowVerificationWizard(false)}
+                  className="p-2 rounded-full hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                  aria-label={t('close')}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {verificationStep === 0 && (
+                <div className="space-y-4">
+                  <div className="rounded-2xl overflow-hidden border border-gray-100 dark:border-zinc-800">
+                    <img
+                      src="icons/Zimo галочка верификации светлая тема .png"
+                      alt="Zimo verification"
+                      className="aspect-video w-full object-cover dark:hidden"
+                    />
+                    <img
+                      src="icons/Zimo галочка верификации тёмная тема.png"
+                      alt="Zimo verification"
+                      className="aspect-video w-full object-cover hidden dark:block"
+                    />
+                  </div>
+                  <div className="text-sm text-gray-500 dark:text-gray-300">
+                    {t('verificationHint')}
+                  </div>
+                  <button
+                    onClick={() => setVerificationStep(1)}
+                    className="w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold"
+                  >
+                    {t('startVerification')}
+                  </button>
+                </div>
+              )}
+
+              {verificationStep === 1 && (
+                <div className="space-y-3">
+                  <div className="text-sm font-bold">{t('verificationWhy')}</div>
+                  <div className="space-y-2">
+                    {[
+                      { key: 'popular', label: t('verificationCategoryPopular') },
+                      { key: 'personal', label: t('verificationCategoryPersonal') },
+                      { key: 'brand', label: t('verificationCategoryBrand') },
+                      { key: 'other', label: t('verificationCategoryOther') },
+                    ].map((opt) => (
+                      <button
+                        key={opt.key}
+                        onClick={() => {
+                          setVerificationCategory(opt.key as any);
+                          setVerificationStep(2);
+                        }}
+                        className="w-full text-left px-4 py-3 rounded-2xl border border-gray-100 dark:border-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                      >
+                        <div className="font-bold text-sm">{opt.label}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => setVerificationStep(0)}
+                    className="w-full py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    {t('back')}
+                  </button>
+                </div>
+              )}
+
+              {verificationStep === 2 && (
+                <div className="space-y-3">
+                  <div className="text-sm font-bold">{t('verificationTellMore')}</div>
+                  <textarea
+                    value={verificationReason}
+                    onChange={(e) => setVerificationReason(e.target.value)}
+                    rows={3}
+                    className="w-full mt-1 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                    placeholder={t('verificationTellMore')}
+                  />
+                  <div className="space-y-2">
+                    <div className="text-xs font-bold text-gray-500">{t('evidence')}</div>
+                    <div className="space-y-2">
+                      {[0, 1, 2].map((idx) => (
+                        <input
+                          key={idx}
+                          value={verificationEvidenceLinks[idx] || ''}
+                          onChange={(e) =>
+                            setVerificationEvidenceLinks((prev) => {
+                              const next = [...prev];
+                              next[idx] = e.target.value;
+                              return next;
+                            })
+                          }
+                          placeholder={t('evidenceLinkPlaceholder')}
+                          className="w-full bg-gray-50 dark:bg-zinc-800 px-3 py-2 rounded-xl border dark:border-zinc-700 text-sm focus:outline-none"
+                        />
+                      ))}
+                    </div>
+                    <div className="text-[10px] text-gray-400">{t('evidenceHint')}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setVerificationStep(1)}
+                      className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                    >
+                      {t('back')}
+                    </button>
+                    <button
+                      onClick={submitVerificationRequest}
+                      className="flex-1 bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-60"
+                    >
+                      {t('submitVerification')}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -4484,19 +6038,19 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
   const recentChatFetchId = useRef(0);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
+    const unsubscribe = safeOnSnapshot(collection(db, 'users'), (snapshot: any) => {
       setUsers(snapshot.docs.map(doc => doc.data() as UserProfile).filter(u => u.uid !== profile?.uid));
-    });
+    }, 'Не удалось загрузить пользователей (messages):');
     
     if (profile) {
       const q = query(collection(db, 'follows'), where('followerUid', '==', profile.uid));
-      const unsubFollows = onSnapshot(q, (snapshot) => {
+      const unsubFollows = safeOnSnapshot(q, (snapshot: any) => {
         const approved = snapshot.docs
           .map(doc => doc.data() as Follow)
           .filter(f => f.status === 'approved')
           .map(f => f.followingUid);
         setFollowingUids(approved);
-      });
+      }, 'Не удалось загрузить подписки (messages):');
 
       // Listen for unread messages
       const qUnread = query(
@@ -4504,14 +6058,14 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
         where('receiverUid', '==', profile.uid),
         where('read', '==', false)
       );
-      const unsubUnread = onSnapshot(qUnread, (snapshot) => {
+      const unsubUnread = safeOnSnapshot(qUnread, (snapshot: any) => {
         const counts: Record<string, number> = {};
         snapshot.docs.forEach(doc => {
           const m = doc.data() as Message;
           counts[m.senderUid] = (counts[m.senderUid] || 0) + 1;
         });
         setUnreadCounts(counts);
-      });
+      }, 'Не удалось загрузить непрочитанные сообщения (messages badge):');
 
       // Recent chats: include both sent and received messages and sort by last message.
       let sent: Message[] = [];
@@ -4562,14 +6116,14 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
         limit(30)
       );
 
-      const unsubSent = onSnapshot(qSent, (snapshot) => {
+      const unsubSent = safeOnSnapshot(qSent, (snapshot: any) => {
         sent = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message));
         rebuildRecentChats();
-      });
-      const unsubReceived = onSnapshot(qReceived, (snapshot) => {
+      }, 'Не удалось загрузить отправленные сообщения:');
+      const unsubReceived = safeOnSnapshot(qReceived, (snapshot: any) => {
         received = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message));
         rebuildRecentChats();
-      });
+      }, 'Не удалось загрузить входящие сообщения:');
 
       return () => { unsubscribe(); unsubFollows(); unsubUnread(); unsubSent(); unsubReceived(); };
     }
@@ -4618,7 +6172,18 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
                     className="flex flex-col items-center gap-2 min-w-[80px] group"
                   >
                     <div className="relative">
-                      <img src={user.photoURL} className="w-16 h-16 rounded-full object-cover border-2 border-transparent group-hover:border-black dark:group-hover:border-white transition-all" referrerPolicy="no-referrer" />
+                      <img
+                        src={user.photoURL || undefined}
+                        loading="lazy"
+                        className="w-16 h-16 rounded-full object-cover border-2 border-transparent group-hover:border-black dark:group-hover:border-white transition-all"
+                        referrerPolicy="no-referrer"
+                        alt=""
+                      />
+                      {user.verified && (
+                        <div className="absolute -bottom-1 -right-1 bg-white dark:bg-black rounded-full p-1 border border-gray-100 dark:border-zinc-800">
+                          <BadgeCheck size={12} className="text-blue-500" />
+                        </div>
+                      )}
                       {user.isOnline && (
                         <div className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 border-2 border-white dark:border-black rounded-full" />
                       )}
@@ -4652,14 +6217,17 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
                   >
                     <div className="flex items-center gap-4">
                       <div className="relative">
-                        <img src={user.photoURL} className="w-12 h-12 rounded-full object-cover" referrerPolicy="no-referrer" />
+	                        <img src={user.photoURL || undefined} loading="lazy" className="w-12 h-12 rounded-full object-cover" referrerPolicy="no-referrer" alt="" />
                         {user.isOnline && (
                           <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white dark:border-black rounded-full" />
                         )}
                       </div>
                         <div>
-                          <div className="font-bold text-sm flex items-center gap-2">
-                            {user.displayName}
+                          <div className="font-bold text-sm inline-flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1">
+                              <span>{user.displayName}</span>
+                              {user.verified ? <VerifiedBadge title={t('verified')} /> : null}
+                            </span>
                             {unreadCounts[user.uid] > 0 && (
                               <span className="bg-red-500 text-white text-[8px] px-1.5 py-0.5 rounded-full">
                                 {unreadCounts[user.uid]}
@@ -4687,7 +6255,7 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
               className="flex items-center justify-between p-4 bg-white dark:bg-zinc-900 rounded-2xl border border-gray-100 dark:border-zinc-800 hover:border-black dark:hover:border-white transition-all cursor-pointer"
             >
               <div className="flex items-center gap-4">
-                <img src={user.photoURL} className="w-12 h-12 rounded-full object-cover" referrerPolicy="no-referrer" />
+	                <img src={user.photoURL || undefined} loading="lazy" className="w-12 h-12 rounded-full object-cover" referrerPolicy="no-referrer" alt="" />
                 <div>
                   <div className="font-bold text-sm">{user.displayName}</div>
                   <div className="text-[10px] text-gray-400">{getUserSecondaryLabel(user, profile?.uid, t)}</div>
@@ -4714,6 +6282,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const { profile } = useAuth();
   const { t } = useSettings();
   const { showToast } = useToast();
+  const { readOnly } = useAppConfig();
   const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -4766,26 +6335,26 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     []
   );
 
-  useEffect(() => {
-    if (!profile) return;
+	  useEffect(() => {
+	    if (!profile) return;
 
-    const unsubReceiver = onSnapshot(doc(db, 'users', receiverUid), (d) => {
-      setReceiver(d.data() as UserProfile);
-    });
-    
-    const q = query(
-      collection(db, 'messages'),
-      orderBy('createdAt', 'asc'),
-      limit(50)
-    );
+	    const unsubReceiver = safeOnSnapshot(doc(db, 'users', receiverUid), (d: any) => {
+	      setReceiver(d.data() as UserProfile);
+	    }, 'Не удалось загрузить профиль получателя (chat):');
+	    
+	    const q = query(
+	      collection(db, 'messages'),
+	      orderBy('createdAt', 'asc'),
+	      limit(50)
+	    );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const allMsgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
-      const filtered = allMsgs.filter(m => 
-        (m.senderUid === profile.uid && m.receiverUid === receiverUid) ||
-        (m.senderUid === receiverUid && m.receiverUid === profile.uid)
-      );
-      setMessages(filtered);
+	    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
+	      const allMsgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+	      const filtered = allMsgs.filter(m => 
+	        (m.senderUid === profile.uid && m.receiverUid === receiverUid) ||
+	        (m.senderUid === receiverUid && m.receiverUid === profile.uid)
+	      );
+	      setMessages(filtered);
 
       // Mark unread messages as read
       filtered.forEach(m => {
@@ -4809,12 +6378,12 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
         lastSeenAtBottomId.current = filtered[filtered.length - 1]?.id ?? null;
         setUnseenIncoming(0);
       }
-    });
-    return () => {
-      unsubscribe();
-      unsubReceiver();
-    };
-  }, [receiverUid, profile?.uid]);
+	    }, 'Не удалось загрузить сообщения (chat):');
+	    return () => {
+	      unsubscribe();
+	      unsubReceiver();
+	    };
+	  }, [receiverUid, profile?.uid]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -4908,6 +6477,10 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if ((!text.trim() && !uploading) || !profile) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
 
     const messageData: any = {
       senderUid: profile.uid,
@@ -4930,58 +6503,82 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     setTypingState(false);
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !profile) return;
-    if (!STORAGE_ENABLED) {
-      try {
-        const { dataUrl, bytes } = await readAndCompressImage(file);
-        if (bytes > MAX_IMAGE_BYTES) {
-          showToast(t('imageTooLarge'), 'error');
-          return;
-        }
-        await addDoc(collection(db, 'messages'), {
-          senderUid: profile.uid,
-          receiverUid,
-          text: '',
-          imageUrl: dataUrl,
-          createdAt: serverTimestamp(),
-          read: false
-        });
-        return;
-      } catch (err) {
-        showToast(getImageErrorMessage(err, t), 'error');
-        return;
-      }
-    }
+   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+     const file = e.target.files?.[0];
+     if (!file || !profile) return;
+     if (readOnly) {
+       showToast(t('readOnlyMode'), 'info');
+       return;
+     }
 
-    setUploading(true);
-    const storageRef = ref(storage, `chats/${profile.uid}/${Date.now()}_${file.name}`);
-    const uploadTask = uploadBytesResumable(storageRef, file);
+     // Validate file type
+     if (!file.type.startsWith('image/')) {
+       showToast(t('invalidFileType'), 'error');
+       return;
+     }
 
-    uploadTask.on('state_changed',
-      (snapshot) => {
-        setProgress((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-      },
-      (error) => {
-        console.error("Upload error:", error);
-        setUploading(false);
-      },
-      async () => {
-        const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-        await addDoc(collection(db, 'messages'), {
-          senderUid: profile.uid,
-          receiverUid,
-          text: '',
-          imageUrl: downloadURL,
-          createdAt: serverTimestamp(),
-          read: false
-        });
-        setUploading(false);
-        setProgress(0);
-      }
-    );
-  };
+     if (!STORAGE_ENABLED) {
+       try {
+         const { dataUrl, bytes } = await readAndCompressImage(file);
+         if (bytes > MAX_IMAGE_BYTES) {
+           showToast(t('imageTooLarge'), 'error');
+           return;
+         }
+         await addDoc(collection(db, 'messages'), {
+           senderUid: profile.uid,
+           receiverUid,
+           text: '',
+           imageUrl: dataUrl,
+           createdAt: serverTimestamp(),
+           read: false
+         });
+         return;
+       } catch (err) {
+         showToast(getImageErrorMessage(err, t), 'error');
+         return;
+       }
+     }
+
+     setUploading(true);
+     setProgress(0);
+
+     try {
+       // Compress image before upload
+       const { dataUrl, bytes } = await readAndCompressImage(file);
+       if (bytes > MAX_IMAGE_BYTES) {
+         showToast(t('imageTooLarge'), 'error');
+         setUploading(false);
+         return;
+       }
+
+       const blob = await dataUrlToBlob(dataUrl);
+       const filename = `chats/${profile.uid}/${receiverUid}/${Date.now()}.jpg`;
+       const url = await uploadBlobToStorage(filename, blob, (pct) => {
+         setProgress(pct);
+       }, 300000); // 5 minutes
+
+       await addDoc(collection(db, 'messages'), {
+         senderUid: profile.uid,
+         receiverUid,
+         text: '',
+         imageUrl: url,
+         createdAt: serverTimestamp(),
+         read: false
+       });
+     } catch (err: any) {
+       console.error('Chat image upload error:', err);
+       let errorMsg = t('uploadFailed');
+       if (err.message === 'upload_timeout') {
+         errorMsg = t('uploadTimeout');
+       } else if (err.code?.startsWith('storage/')) {
+         errorMsg = getStorageErrorMessage(err, t);
+       }
+       showToast(errorMsg, 'error');
+     } finally {
+       setUploading(false);
+       setProgress(0);
+     }
+   };
 
   const handleStartEdit = (m: Message) => {
     setEditingId(m.id);
@@ -5003,6 +6600,10 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
 
   const startRecording = async () => {
     if (!profile || isRecording || audioUploading) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recorderStreamRef.current = stream;
@@ -5147,7 +6748,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     if (!profile) return;
     try {
       if (forAll) {
-        await firestore.doc(awDb.DB_ID, 'messages', m.id).update({
+        await updateDoc(doc(db, 'messages', m.id), {
           deletedForAll: true,
           text: '',
           imageUrl: '',
@@ -5222,7 +6823,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           </button>
           {receiver && (
             <div className="flex items-center gap-3">
-              <img src={receiver.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
+              <img src={receiver.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
               <div>
                 <div className="font-bold text-sm">{receiver.displayName}</div>
                 {receiverHandle && (
@@ -5899,7 +7500,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                         setShowMediaPicker(false);
                       }}
                     >
-                      <img src={url} className="w-full h-full object-contain p-2" alt="Sticker" />
+                      <img src={url} loading="lazy" className="w-full h-full object-contain p-2" alt="Sticker" />
                     </button>
                   ))}
                 </div>
@@ -5988,7 +7589,7 @@ function Login() {
                   type="text"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder={t('displayName')}
+                  placeholder={t('displayNameLabel')}
                   className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-3 focus:outline-none focus:border-black dark:focus:border-white"
                   required
                 />
@@ -6427,12 +8028,12 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
                   <div className="grid grid-cols-2 gap-3">
                     {avatarUrl && (
                       <div className="bg-gray-50 dark:bg-zinc-800 rounded-2xl p-2 flex items-center justify-center">
-                        <img src={avatarUrl} className="w-16 h-16 rounded-full object-cover" />
+                        <img src={avatarUrl} loading="lazy" className="w-16 h-16 rounded-full object-cover" />
                       </div>
                     )}
                     {bannerUrl && (
                       <div className="bg-gray-50 dark:bg-zinc-800 rounded-2xl p-2">
-                        <img src={bannerUrl} className="w-full h-16 rounded-xl object-cover" />
+                        <img src={bannerUrl} loading="lazy" className="w-full h-16 rounded-xl object-cover" />
                       </div>
                     )}
                   </div>
@@ -6493,18 +8094,18 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
   const commentDescendantCountById = useMemo(() => buildCommentDescendantCountMap(commentTree), [commentTree]);
   const [collapsedCommentBranches, setCollapsedCommentBranches] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
-    const q = query(
-      collection(db, 'posts', post.id, 'comments'),
-      orderBy('createdAt', 'asc'),
-      limit(commentsLimit)
-    );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setHasMoreComments(snapshot.size >= commentsLimit);
-      setComments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment)));
-    });
-    return unsubscribe;
-  }, [post.id, commentsLimit]);
+	  useEffect(() => {
+	    const q = query(
+	      collection(db, 'posts', post.id, 'comments'),
+	      orderBy('createdAt', 'asc'),
+	      limit(commentsLimit)
+	    );
+	    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
+	      setHasMoreComments(snapshot.size >= commentsLimit);
+	      setComments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment)));
+	    }, 'Не удалось загрузить комментарии (post detail):');
+	    return unsubscribe;
+	  }, [post.id, commentsLimit]);
 
   useEffect(() => {
     const longBranchIds = collectLongCommentBranchIds(
@@ -6556,6 +8157,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
         authorUid: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL,
+        authorVerified: profile.verified === true,
         text: commentText.trim(),
         createdAt: serverTimestamp(),
         likes: 0,
@@ -6574,6 +8176,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
           fromUid: profile.uid,
           fromName: profile.displayName,
           fromPhoto: profile.photoURL,
+          fromVerified: profile.verified === true,
           toUid: post.authorUid,
           postId: post.id,
           createdAt: serverTimestamp(),
@@ -6639,7 +8242,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
                 className="inline-block h-8 w-8 rounded-full ring-2 ring-white dark:ring-zinc-900 hover:scale-110 transition-transform"
                 title={user.displayName}
               >
-                <img src={user.photoURL} className="h-full w-full rounded-full object-cover" referrerPolicy="no-referrer" />
+	                <img src={user.photoURL || undefined} loading="lazy" className="h-full w-full rounded-full object-cover" referrerPolicy="no-referrer" alt="" />
               </button>
             ))}
             {post.likes > likedByUsers.length && (
@@ -6770,7 +8373,7 @@ function LikesModal({ postId, onClose, onOpenProfile }: { postId: string, onClos
                 onClick={() => { onOpenProfile(user.uid); onClose(); }}
                 className="w-full flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800 rounded-2xl transition-colors text-left"
               >
-                <img src={user.photoURL} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
+	                <img src={user.photoURL || undefined} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" alt="" />
                 <div>
                   <div className="font-bold text-sm">{user.displayName}</div>
                   <div className="text-[10px] text-gray-400">{getUserSecondaryLabel(user, profile?.uid, t)}</div>
@@ -6807,22 +8410,22 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
     refreshNotificationsFromSnapshot();
   };
 
-  useEffect(() => {
-    if (!profile) return;
-    const q = query(
-      collection(db, 'notifications'), 
-      where('toUid', '==', profile.uid),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    );
-    const unsubscribe = onSnapshot(q, (s) => {
-      const snapshotNotifications = s.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification));
-      lastNotificationSnapshotRef.current = snapshotNotifications;
-      const hidden = hiddenNotificationIdsRef.current;
-      setNotifications(snapshotNotifications.filter(n => !hidden[n.id]));
-    });
-    return unsubscribe;
-  }, [profile]);
+	  useEffect(() => {
+	    if (!profile) return;
+	    const q = query(
+	      collection(db, 'notifications'), 
+	      where('toUid', '==', profile.uid),
+	      orderBy('createdAt', 'desc'),
+	      limit(50)
+	    );
+	    const unsubscribe = safeOnSnapshot(q, (s: any) => {
+	      const snapshotNotifications = s.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification));
+	      lastNotificationSnapshotRef.current = snapshotNotifications;
+	      const hidden = hiddenNotificationIdsRef.current;
+	      setNotifications(snapshotNotifications.filter(n => !hidden[n.id]));
+	    }, 'Не удалось загрузить уведомления:');
+	    return unsubscribe;
+	  }, [profile]);
 
   const handleNotificationClick = async (n: Notification) => {
     if (!n.read) {
@@ -6869,6 +8472,9 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
       case 'follow_request': return t('followRequestMessage');
       case 'new_post': return t('newPostMessage');
       case 'repost': return t('repostMessage');
+      case 'verification_approved': return t('verificationApprovedNotification');
+      case 'verification_rejected': return n.reason ? t('verificationRejectedNotification').replace('{reason}', n.reason) : t('verificationRejectedNotification').replace('{reason}', t('noReason'));
+      case 'verification_request_sent': return t('verificationRequestSentNotification');
       default: return t('interactedMessage');
     }
   };
@@ -6894,6 +8500,7 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
         fromUid: profile.uid,
         fromName: profile.displayName,
         fromPhoto: profile.photoURL,
+        fromVerified: profile.verified === true,
         toUid: n.fromUid,
         createdAt: serverTimestamp(),
         read: false
@@ -6970,10 +8577,14 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             whileTap={{ scale: 0.985 }}
           >
-            <img src={n.fromPhoto} className="w-10 h-10 rounded-full" referrerPolicy="no-referrer" />
+            <img src={n.fromPhoto} loading="lazy" className="w-10 h-10 rounded-full" referrerPolicy="no-referrer" />
             <div className="flex-1">
               <p className="text-sm">
-                <span className="font-bold">{n.fromName}</span> {getMessage(n)}
+                <span className="font-bold inline-flex items-center gap-1">
+                  <span>{n.fromName}</span>
+                  {n.fromVerified ? <VerifiedBadge title={t('verified')} /> : null}
+                </span>{' '}
+                {getMessage(n)}
               </p>
               <p className="text-[10px] text-gray-400 mt-1">
                 {n.createdAt ? formatDistanceToNow(n.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
@@ -7004,9 +8615,12 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
   );
 }
 
-function SocialApp() {
+function SocialApp({ isOffline, offlineQueue }: { isOffline: boolean; offlineQueue: QueuedAction[] }) {
   const { user, loading, profile, logout, needsOnboarding } = useAuth();
-  const { darkMode, setDarkMode } = useSettings();
+  const { darkMode, setDarkMode, t } = useSettings();
+  const { showToast } = useToast();
+  const { addVerificationNotification } = useVerificationNotifications();
+  const { configLoaded, configError, maintenance, maintenanceMessage, maintenanceEndsAt, readOnly, isAdmin, pendingMaintenanceDisable } = useAppConfig();
   const [view, setView] = useState<View>('feed');
   const [selectedChat, setSelectedChat] = useState<string | null>(null);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
@@ -7016,10 +8630,156 @@ function SocialApp() {
   const [likesPostId, setLikesPostId] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(needsOnboarding);
   const isChatView = view === 'chat';
+  const [showWelcomeBack, setShowWelcomeBack] = useState(false);
+  const [maintenanceNewsId, setMaintenanceNewsId] = useState<string | null>(null);
+  const [maintenanceRemainingMs, setMaintenanceRemainingMs] = useState<number | null>(null);
+  const [disablingMaintenance, setDisablingMaintenance] = useState(false);
 
   useEffect(() => {
     setShowOnboarding(needsOnboarding);
   }, [needsOnboarding]);
+
+  useEffect(() => {
+    if (maintenance) {
+      try {
+        localStorage.setItem('zimo_was_maintenance', '1');
+      } catch {}
+      return;
+    }
+    try {
+      const was = localStorage.getItem('zimo_was_maintenance') === '1';
+      if (was && !isAdmin) {
+        localStorage.removeItem('zimo_was_maintenance');
+        setShowWelcomeBack(true);
+        const timer = window.setTimeout(() => setShowWelcomeBack(false), 9000);
+        return () => window.clearTimeout(timer);
+      }
+    } catch {}
+  }, [maintenance, isAdmin]);
+
+  useEffect(() => {
+    if (!maintenance || !maintenanceEndsAt) {
+      setMaintenanceRemainingMs(null);
+      return;
+    }
+    const tick = () => {
+      const ms = maintenanceEndsAt.toDate().getTime() - Date.now();
+      setMaintenanceRemainingMs(ms > 0 ? ms : 0);
+    };
+    tick();
+    const interval = window.setInterval(tick, 1000);
+    return () => window.clearInterval(interval);
+  }, [maintenance, maintenanceEndsAt]);
+
+  if (!configLoaded) return (
+    <div className="h-screen flex items-center justify-center dark:bg-black">
+      <div className="w-8 h-8 border-4 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
+    </div>
+  );
+
+  // During maintenance, lock out everyone except admins.
+  // We wait for auth loading to finish to avoid briefly locking out admins while `isAdmin` is still resolving.
+  if (maintenance && loading) {
+    return (
+      <div className="h-screen flex items-center justify-center dark:bg-black">
+        <div className="w-8 h-8 border-4 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
+      </div>
+    );
+  }
+
+  if (maintenance && (!user || !isAdmin)) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-gradient-to-b from-gray-50 to-white dark:from-black dark:to-zinc-950 text-black dark:text-white">
+        <div className="w-full max-w-xl text-center">
+          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em] mb-3">{t('maintenanceTitle')}</div>
+          <div className="text-4xl md:text-5xl font-extrabold tracking-tight mb-3">{t('maintenanceSoonBack')}</div>
+          <div className="text-sm md:text-base text-gray-600 dark:text-gray-300 max-w-md mx-auto">
+            {maintenanceMessage?.trim() ? maintenanceMessage : t('maintenanceHint')}
+          </div>
+          {typeof maintenanceRemainingMs === 'number' && maintenanceEndsAt && (
+            <div className="mt-3 text-xs text-gray-500 dark:text-gray-300">
+              {t('timeLeft')}{' '}
+              <span className="font-bold tabular-nums">
+                {formatMsAsCountdown(maintenanceRemainingMs)}
+              </span>
+            </div>
+          )}
+
+          <div className="mt-8 text-left mx-auto max-w-md">
+            <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em] mb-2">{t('maintenanceNews')}</div>
+            <div className="space-y-2">
+              {MAINTENANCE_NEWS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setMaintenanceNewsId(item.id)}
+                  className="w-full text-left p-3 rounded-2xl border border-gray-100 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 hover:bg-white dark:hover:bg-zinc-900 transition-colors"
+                >
+                  <div className="text-xs font-bold">{item.title}</div>
+                  <div className="text-[11px] text-gray-500 dark:text-gray-300 mt-1 line-clamp-2">{item.excerpt}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-8 w-full max-w-md bg-black dark:bg-white text-white dark:text-black py-3 rounded-2xl text-xs font-bold mx-auto"
+          >
+            {t('reloadApp')}
+          </button>
+        </div>
+
+        <AnimatePresence>
+          {maintenanceNewsId && (
+            <motion.div
+              key="maintenance_news"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+              onClick={() => setMaintenanceNewsId(null)}
+            >
+              <motion.div
+                initial={{ y: 12, opacity: 0, scale: 0.98 }}
+                animate={{ y: 0, opacity: 1, scale: 1 }}
+                exit={{ y: 12, opacity: 0, scale: 0.98 }}
+                transition={{ duration: 0.18 }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-md bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl p-5 shadow-xl"
+              >
+                {(() => {
+                  const item = MAINTENANCE_NEWS.find((x) => x.id === maintenanceNewsId);
+                  if (!item) return null;
+                  return (
+                    <>
+                      <div className="flex items-start justify-between gap-4 mb-3">
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">
+                            {t('maintenanceNews')}
+                          </div>
+                          <div className="text-lg font-bold mt-1">{item.title}</div>
+                        </div>
+                        <button
+                          onClick={() => setMaintenanceNewsId(null)}
+                          className="p-2 rounded-full hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                          aria-label={t('close')}
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                      <div className="text-sm text-gray-600 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                        {item.content}
+                      </div>
+                    </>
+                  );
+                })()}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  }
 
   if (loading) return (
     <div className="h-screen flex items-center justify-center dark:bg-black">
@@ -7028,6 +8788,29 @@ function SocialApp() {
   );
 
   if (!user) return <Login />;
+
+  if (configError && !isAdmin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 bg-gray-50 dark:bg-black text-black dark:text-white">
+        <div className="max-w-md w-full text-center bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl p-6 shadow-sm">
+          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em] mb-3">{t('maintenanceTitle')}</div>
+          <div className="text-2xl font-bold tracking-tight mb-2">{t('configUnavailable')}</div>
+          <div className="text-sm text-gray-500 dark:text-gray-300">
+            {t('configUnavailableHint')}
+          </div>
+          <div className="mt-3 text-[11px] text-gray-400 font-mono break-words">
+            {String(configError)}
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-6 w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold"
+          >
+            {t('reloadApp')}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (showOnboarding) {
     return <OnboardingWizard onComplete={() => setShowOnboarding(false)} />;
@@ -7047,6 +8830,20 @@ function SocialApp() {
     }
   };
 
+  const handleOpenPostId = async (postId: string) => {
+    try {
+      const snap = await getDoc(doc(db, 'posts', postId));
+      if (!snap.exists()) {
+        showToast(t('noPostFound'), 'info');
+        return;
+      }
+      setSelectedPost({ id: snap.id, ...(snap.data() as any) } as Post);
+      setView('post_detail');
+    } catch {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
   const handleHashtagClick = (tag: string) => {
     setActiveHashtag(tag);
     setView('feed');
@@ -7056,8 +8853,123 @@ function SocialApp() {
     setSelectedImage(url);
   };
 
+  const disableMaintenanceNow = async () => {
+    if (!isAdmin || !user) return;
+    if (disablingMaintenance) return;
+    if (!navigator.onLine) {
+      showToast(t('offlineTryLater'), 'info');
+      return;
+    }
+    setDisablingMaintenance(true);
+    try {
+      await withTimeout(
+        setDoc(
+          doc(db, 'config', 'app'),
+          {
+            maintenance: false,
+            updatedAt: serverTimestamp(),
+            updatedBy: user.uid,
+          },
+          { merge: true }
+        ),
+        12000,
+        'disable_maintenance_timeout'
+      );
+      showToast(t('saveChanges'), 'success');
+    } catch (err) {
+      console.error('Failed to disable maintenance:', err);
+      if (String((err as any)?.message || '').includes('disable_maintenance_timeout')) {
+        showToast(t('requestTimedOut'), 'error');
+      } else if (String((err as any)?.code || '') === 'resource-exhausted') {
+        showToast(t('quotaExceededQueued'), 'error');
+        try {
+          localStorage.setItem('zimo_pending_disable_maintenance', '1');
+        } catch {}
+      } else {
+        showToast(t('genericError'), 'error');
+      }
+    } finally {
+      setDisablingMaintenance(false);
+    }
+  };
+
   return (
-      <div className="min-h-screen bg-gray-50 dark:bg-black text-black dark:text-white transition-colors">
+       <div className="min-h-screen bg-gray-50 dark:bg-black text-black dark:text-white transition-colors">
+      <AnimatePresence>
+        {maintenance && isAdmin && (
+          <motion.div
+            key="maintenance_admin_banner"
+            initial={{ y: -60, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -60, opacity: 0 }}
+            className={cn(
+              "fixed left-0 right-0 z-[110] bg-amber-500 text-black py-2 px-4 flex items-center justify-center gap-2 shadow-md",
+              isOffline ? "top-10" : "top-0"
+            )}
+          >
+            <Shield size={18} />
+            <span className="text-sm font-bold">{t('maintenanceAdminBanner')}</span>
+            {pendingMaintenanceDisable ? (
+              <span className="ml-2 text-xs font-bold">{t('maintenanceDisableQueued')}</span>
+            ) : null}
+            <button
+              type="button"
+              onClick={disableMaintenanceNow}
+              disabled={disablingMaintenance}
+              className="ml-2 px-3 py-1 rounded-full text-xs font-bold bg-black/10 hover:bg-black/20 disabled:opacity-60 transition-colors"
+            >
+              {disablingMaintenance ? t('uploading') : t('disable')}
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showWelcomeBack && !maintenance && !isAdmin && (
+          <motion.div
+            key="welcome_back"
+            initial={{ y: -60, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -60, opacity: 0 }}
+            className={cn(
+              "fixed left-0 right-0 z-[110] bg-emerald-600 text-white py-2 px-4 flex items-center justify-center gap-2 shadow-md",
+              isOffline ? "top-10" : "top-0"
+            )}
+          >
+            <BadgeCheck size={18} />
+            <span className="text-sm font-bold">{t('welcomeBack')}</span>
+            <button
+              type="button"
+              onClick={() => setShowWelcomeBack(false)}
+              className="ml-2 p-1 rounded-full hover:bg-white/10"
+              aria-label={t('close')}
+            >
+              <X size={16} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {/* Offline indicator */}
+      {isOffline && (
+        <div className="fixed top-0 left-0 right-0 z-[120] bg-yellow-500 text-black py-2 px-4 flex items-center justify-center gap-2 shadow-md">
+          <WifiOff size={18} />
+          <span className="text-sm font-bold">
+            {offlineQueue.length > 0 
+              ? `Offline. ${offlineQueue.length} actions queued.`
+              : 'You\'re offline. Actions will be queued.'}
+          </span>
+        </div>
+      )}
+
+      {readOnly && !maintenance && (
+        <div className={cn(
+          "fixed left-0 right-0 z-[110] bg-blue-600 text-white py-2 px-4 flex items-center justify-center gap-2 shadow-md",
+          isOffline ? "top-10" : "top-0"
+        )}>
+          <Info size={18} />
+          <span className="text-sm font-bold">{t('readOnlyMode')}</span>
+        </div>
+      )}
+
       {!isChatView && (
         <Navbar 
           currentView={view} 
@@ -7065,10 +8977,11 @@ function SocialApp() {
           darkMode={darkMode} 
           setDarkMode={setDarkMode} 
           onSearchUser={handleOpenProfile}
+          isAdmin={isAdmin}
         />
       )}
       
-      <main className={cn(isChatView ? "pt-0 pb-0" : "pb-24 pt-6 md:pt-16")}>
+      <main className={cn(isChatView ? "pt-0 pb-0" : "pb-24 pt-6 md:pt-16", isOffline && "pt-10")}>
         <AnimatePresence mode="wait">
           {view === 'feed' && (
             <Feed 
@@ -7108,6 +9021,7 @@ function SocialApp() {
               onHashtagClick={handleHashtagClick} 
               onOpenImage={handleOpenImage}
               onShowLikes={setLikesPostId}
+              onOpenAdmin={() => setView('admin')}
             />
           )}
           {view === 'user_profile' && selectedUser && (
@@ -7146,6 +9060,14 @@ function SocialApp() {
               receiverUid={selectedChat} 
               onBack={() => setView('messages')} 
               onOpenImage={handleOpenImage}
+            />
+          )}
+          {view === 'admin' && isAdmin && (
+            <AdminPanel
+              key="admin"
+              onBack={() => setView('profile')}
+              onOpenProfile={handleOpenProfile}
+              onOpenPostId={handleOpenPostId}
             />
           )}
         </AnimatePresence>
@@ -7197,15 +9119,929 @@ function ErrorFallback({ error, resetErrorBoundary }: { error: any, resetErrorBo
   );
 }
 
+type VerificationRequest = {
+  uid: string;
+  displayName: string;
+  status: 'pending' | 'approved' | 'rejected';
+  category?: 'popular' | 'personal' | 'brand' | 'other';
+  reason?: string;
+  evidenceLinks?: string[];
+  createdAt?: Timestamp;
+  reviewedAt?: Timestamp;
+  reviewedBy?: string;
+};
+
+type Report = {
+  postId: string;
+  reporterUid: string;
+  authorUid: string;
+  status: 'pending' | 'dismissed' | 'action_taken';
+  createdAt?: Timestamp;
+  reviewedAt?: Timestamp;
+  reviewedBy?: string;
+};
+
+function AdminPanel({
+  onBack,
+  onOpenProfile,
+  onOpenPostId,
+}: {
+  onBack: () => void;
+  onOpenProfile: (uid: string) => void;
+  onOpenPostId: (postId: string) => void;
+  key?: string;
+}) {
+  const { t } = useSettings();
+  const { showToast } = useToast();
+  const { user } = useAuth();
+  const { addVerificationNotification } = useVerificationNotifications();
+  const { isAdmin, maintenance, readOnly, maintenanceMessage, maintenanceEndsAt } = useAppConfig();
+  const [saving, setSaving] = useState(false);
+  const [cfgMaintenance, setCfgMaintenance] = useState(maintenance);
+  const [cfgReadOnly, setCfgReadOnly] = useState(readOnly);
+  const [cfgMessage, setCfgMessage] = useState(maintenanceMessage);
+  const [cfgEndsAt, setCfgEndsAt] = useState('');
+  const [annTitle, setAnnTitle] = useState('');
+  const [annBody, setAnnBody] = useState('');
+  const [announcements, setAnnouncements] = useState<AppAnnouncement[]>([]);
+  const [annLoading, setAnnLoading] = useState(true);
+  const [showMaintenancePreview, setShowMaintenancePreview] = useState(false);
+  const [requests, setRequests] = useState<Array<{ id: string; data: VerificationRequest }>>([]);
+  const [reports, setReports] = useState<Array<{ id: string; data: Report }>>([]);
+  const [quickUid, setQuickUid] = useState('');
+  const [quickUser, setQuickUser] = useState<UserProfile | null>(null);
+  const [quickLoading, setQuickLoading] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejectTargetUid, setRejectTargetUid] = useState<string | null>(null);
+  const [showRejectDialog, setShowRejectDialog] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingReports, setLoadingReports] = useState(true);
+
+  useEffect(() => {
+    setCfgMaintenance(maintenance);
+  }, [maintenance]);
+  useEffect(() => {
+    setCfgReadOnly(readOnly);
+  }, [readOnly]);
+  useEffect(() => {
+    setCfgMessage(maintenanceMessage);
+  }, [maintenanceMessage]);
+
+  useEffect(() => {
+    if (!maintenanceEndsAt) {
+      setCfgEndsAt('');
+      return;
+    }
+    try {
+      const d = maintenanceEndsAt.toDate();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      setCfgEndsAt(value);
+    } catch {
+      setCfgEndsAt('');
+    }
+  }, [maintenanceEndsAt]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const qAnn = query(collection(db, 'announcements'), orderBy('createdAt', 'desc'), limit(50));
+    const unsub = safeOnSnapshot(
+      qAnn,
+      (snap: any) => {
+        const items = snap.docs.map((d: any) => ({ id: d.id, ...(d.data() as any) } as AppAnnouncement));
+        setAnnouncements(items);
+        setAnnLoading(false);
+      },
+      'Не удалось загрузить оповещения (admin):'
+    );
+    return unsub;
+  }, [isAdmin]);
+
+	  useEffect(() => {
+	    if (!isAdmin) return;
+	    const qReq = query(collection(db, 'verificationRequests'), orderBy('createdAt', 'desc'), limit(50));
+	    const unsub = safeOnSnapshot(
+	      qReq,
+	      (snap: any) => {
+	        setRequests(snap.docs.map((d: any) => ({ id: d.id, data: d.data() as VerificationRequest })));
+	        setLoading(false);
+	      },
+	      'Не удалось загрузить заявки на верификацию (admin):'
+	    );
+	    return unsub;
+	  }, [isAdmin]);
+
+	  useEffect(() => {
+	    if (!isAdmin) return;
+	    const qRep = query(collection(db, 'reports'), orderBy('createdAt', 'desc'), limit(50));
+	    const unsub = safeOnSnapshot(
+	      qRep,
+	      (snap: any) => {
+	        setReports(snap.docs.map((d: any) => ({ id: d.id, data: d.data() as Report })));
+	        setLoadingReports(false);
+	      },
+	      'Не удалось загрузить жалобы (admin):'
+	    );
+	    return unsub;
+	  }, [isAdmin]);
+
+  const saveConfig = async () => {
+    if (!isAdmin) return;
+    if (!navigator.onLine) {
+      showToast(t('offlineTryLater'), 'info');
+      return;
+    }
+    setSaving(true);
+    try {
+      const endsAtValue = cfgEndsAt.trim()
+        ? Timestamp.fromDate(new Date(cfgEndsAt.trim()))
+        : null;
+      await withTimeout(
+        setDoc(
+          doc(db, 'config', 'app'),
+          {
+            maintenance: cfgMaintenance,
+            readOnly: cfgReadOnly,
+            maintenanceMessage: cfgMessage.trim(),
+            maintenanceEndsAt: endsAtValue,
+            updatedAt: serverTimestamp(),
+            updatedBy: user?.uid || '',
+          },
+          { merge: true }
+        ),
+        12000,
+        'save_config_timeout'
+      );
+      showToast(t('saveChanges'), 'success');
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      if (String(err?.message || '').includes('save_config_timeout')) {
+        showToast(t('requestTimedOut'), 'error');
+      } else if (code === 'resource-exhausted') {
+        showToast(t('quotaExceeded'), 'error');
+      } else {
+        const msg = (err && (err.message || err.code)) ? String(err.message || err.code) : t('genericError');
+        showToast(msg, 'error');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sendAnnouncement = async () => {
+    if (!isAdmin) return;
+    const title = annTitle.trim();
+    const body = annBody.trim();
+    if (!title || !body) {
+      showToast(t('genericError'), 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      await addDoc(collection(db, 'announcements'), {
+        title,
+        body,
+        active: true,
+        createdAt: serverTimestamp(),
+        createdBy: user?.uid || '',
+      });
+
+      // Back-compat / fallback: also store the latest announcement in config/app
+      // so clients without rules/indexes for `announcements` can still show it.
+      await setDoc(
+        doc(db, 'config', 'app'),
+        {
+          announcement: {
+            id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            title,
+            body,
+            active: true,
+            createdAt: serverTimestamp(),
+            createdBy: user?.uid || '',
+          },
+          updatedAt: serverTimestamp(),
+          updatedBy: user?.uid || '',
+        },
+        { merge: true }
+      );
+
+      setAnnTitle('');
+      setAnnBody('');
+      showToast(t('saveChanges'), 'success');
+    } catch {
+      showToast(t('genericError'), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setAnnouncementActive = async (id: string, active: boolean) => {
+    if (!isAdmin) return;
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'announcements', id), { active });
+      showToast(t('saveChanges'), 'success');
+    } catch {
+      showToast(t('genericError'), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteAnnouncement = async (id: string) => {
+    if (!isAdmin) return;
+    if (!window.confirm(t('deletePostConfirm'))) return;
+    setSaving(true);
+    try {
+      await deleteDoc(doc(db, 'announcements', id));
+      showToast(t('saveChanges'), 'success');
+    } catch {
+      showToast(t('genericError'), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const approveRequest = async (uid: string) => {
+    if (!isAdmin) return;
+    try {
+      await updateDoc(doc(db, 'users', uid), { verified: true, verifiedAt: serverTimestamp() });
+      await syncUserPosts(uid, { authorVerified: true });
+      await setDoc(
+        doc(db, 'verificationRequests', uid),
+        { status: 'approved', reviewedAt: serverTimestamp(), reviewedBy: user?.uid || '' },
+        { merge: true }
+      );
+      showToast(t('verified'), 'success');
+      // Send verification approval notification to user
+      try {
+        await addDoc(collection(db, 'notifications'), {
+          type: 'verification_approved',
+          fromUid: user?.uid || '',
+          fromName: user?.displayName || 'Admin',
+          fromPhoto: user?.photoURL || '',
+          fromVerified: user?.photoURL ? true : false,
+          toUid: uid,
+          read: false,
+          createdAt: serverTimestamp(),
+        });
+      } catch (e) {
+        console.warn('Failed to send verification approval notification:', e);
+      }
+      // Show in-app banner notification
+      addVerificationNotification({
+        type: 'approved',
+        title: t('verificationApprovedToast'),
+        message: t('verificationApprovedNotification'),
+      });
+    } catch {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const openRejectDialog = (uid: string) => {
+    setRejectTargetUid(uid);
+    setRejectReason('');
+    setShowRejectDialog(true);
+  };
+
+  const rejectRequest = async (uid: string, reason: string) => {
+    if (!isAdmin) return;
+    try {
+      await setDoc(
+        doc(db, 'verificationRequests', uid),
+        { status: 'rejected', reviewedAt: serverTimestamp(), reviewedBy: user?.uid || '', rejectReason: reason },
+        { merge: true }
+      );
+      showToast(t('reject'), 'info');
+      // Send verification rejection notification to user
+      try {
+        await addDoc(collection(db, 'notifications'), {
+          type: 'verification_rejected',
+          fromUid: user?.uid || '',
+          fromName: user?.displayName || 'Admin',
+          fromPhoto: user?.photoURL || '',
+          fromVerified: user?.photoURL ? true : false,
+          toUid: uid,
+          read: false,
+          createdAt: serverTimestamp(),
+          reason: reason,
+        });
+      } catch (e) {
+        console.warn('Failed to send verification rejection notification:', e);
+      }
+      // Show in-app banner notification
+      addVerificationNotification({
+        type: 'rejected',
+        title: t('verificationRejectedToast'),
+        message: reason ? t('verificationRejectedNotification').replace('{reason}', reason) : t('verificationRejectedNotification').replace('{reason}', t('noReason')),
+      });
+    } catch {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const updateReportStatus = async (reportId: string, status: Report['status']) => {
+    if (!isAdmin) return;
+    try {
+      await setDoc(
+        doc(db, 'reports', reportId),
+        { status, reviewedAt: serverTimestamp(), reviewedBy: user?.uid || '' },
+        { merge: true }
+      );
+      showToast(t('saveChanges'), 'success');
+    } catch {
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const loadQuickUser = async () => {
+    if (!isAdmin) return;
+    const raw = quickUid.trim();
+    if (!raw) return;
+    setQuickLoading(true);
+    try {
+      const asUid = raw.startsWith('@') ? raw.slice(1).trim() : raw;
+      const userSnap = await getDoc(doc(db, 'users', asUid));
+      if (userSnap.exists()) {
+        setQuickUser(userSnap.data() as UserProfile);
+        return;
+      }
+
+      const usernameLower = normalizeSearchText(raw);
+      if (!usernameLower) {
+        setQuickUser(null);
+        showToast(t('userNotFound'), 'info');
+        return;
+      }
+
+      const qUser = query(collection(db, 'users'), where('usernameLower', '==', usernameLower), limit(1));
+      const res = await getDocs(qUser);
+      if (res.empty) {
+        setQuickUser(null);
+        showToast(t('userNotFound'), 'info');
+        return;
+      }
+      setQuickUser(res.docs[0].data() as UserProfile);
+    } catch (e) {
+      console.error('Failed to load user:', e);
+      showToast(t('genericError'), 'error');
+    } finally {
+      setQuickLoading(false);
+    }
+  };
+
+  const setUserVerified = async (uid: string, verified: boolean) => {
+    if (!isAdmin) return;
+    try {
+      if (verified) {
+        await updateDoc(doc(db, 'users', uid), { verified: true, verifiedAt: serverTimestamp() });
+      } else {
+        await updateDoc(doc(db, 'users', uid), { verified: false, verifiedAt: deleteField() });
+      }
+      try {
+        await syncUserPosts(uid, { authorVerified: verified });
+      } catch (e) {
+        // If rules don't allow admins to patch historical posts, still treat user verification as successful.
+        console.warn('Failed to sync user posts verification:', e);
+      }
+      setQuickUser((prev) => (prev && prev.uid === uid ? { ...prev, verified, verifiedAt: prev.verifiedAt } : prev));
+      showToast(verified ? t('verified') : t('unverified'), 'success');
+    } catch (e) {
+      console.error('Failed to set verified:', e);
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  if (!isAdmin) {
+    return (
+      <div className="max-w-xl mx-auto py-20 px-4 text-center text-gray-400">
+        {t('securityError').replace('{operation}', 'read').replace('{path}', 'admin')}
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-xl mx-auto py-20 px-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <button onClick={onBack} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-zinc-900 transition-colors">
+          <ArrowLeft size={18} />
+        </button>
+        <div className="text-center">
+          <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('adminPanel')}</div>
+          <div className="text-xl font-bold tracking-tight">{t('admin')}</div>
+        </div>
+        <div className="w-9" />
+      </div>
+
+      <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+        <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('quickActions')}</div>
+        <div className="flex gap-2">
+          <input
+            value={quickUid}
+            onChange={(e) => setQuickUid(e.target.value)}
+            placeholder={t('uidOrUsername')}
+            className="flex-1 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+          />
+          <button
+            onClick={loadQuickUser}
+            disabled={quickLoading || !quickUid.trim()}
+            className="px-4 py-2 rounded-2xl text-xs font-bold bg-black dark:bg-white text-white dark:text-black disabled:opacity-60"
+          >
+            {quickLoading ? t('loading') : t('search')}
+          </button>
+        </div>
+
+        {quickUser && (
+          <div className="mt-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-bold text-sm truncate inline-flex items-center gap-1">
+                  <span>{quickUser.displayName}</span>
+                  {quickUser.verified ? <VerifiedBadge title={t('verified')} /> : null}
+                </div>
+                <div className="text-[10px] text-gray-400 truncate">{quickUser.uid}</div>
+                {formatUsername(quickUser.username) ? (
+                  <div className="text-[11px] text-gray-500 mt-1">{formatUsername(quickUser.username)}</div>
+                ) : null}
+              </div>
+              <button
+                onClick={() => onOpenProfile(quickUser.uid)}
+                className="px-3 py-1.5 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+              >
+                {t('openProfile')}
+              </button>
+            </div>
+
+            <div className="flex gap-2 mt-3">
+              <button
+                onClick={() => setUserVerified(quickUser.uid, true)}
+                disabled={quickUser.verified === true}
+                className="flex-1 bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-60"
+              >
+                {t('verify')}
+              </button>
+              <button
+                onClick={() => setUserVerified(quickUser.uid, false)}
+                disabled={!quickUser.verified}
+                className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors disabled:opacity-60"
+              >
+                {t('removeVerify')}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+        <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('maintenance')}</div>
+        <div className="space-y-3">
+          {cfgMaintenance && (
+            <div className="rounded-2xl border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 p-3 text-[11px] text-amber-900 dark:text-amber-100">
+              {t('maintenanceAdminNote')}
+              <button
+                type="button"
+                onClick={() => setShowMaintenancePreview(true)}
+                className="ml-2 underline hover:no-underline font-bold"
+              >
+                {t('preview')}
+              </button>
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+            <div>
+              <div className="text-sm font-bold">{t('maintenance')}</div>
+              <div className="text-[11px] text-gray-400">{t('maintenanceHint')}</div>
+            </div>
+            <button
+              onClick={() => setCfgMaintenance(!cfgMaintenance)}
+              className={cn(
+                "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                cfgMaintenance
+                  ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                  : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+              )}
+            >
+              {cfgMaintenance ? t('on') : t('off')}
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+            <div>
+              <div className="text-sm font-bold">{t('readOnly')}</div>
+              <div className="text-[11px] text-gray-400">{t('readOnlyMode')}</div>
+            </div>
+            <button
+              onClick={() => setCfgReadOnly(!cfgReadOnly)}
+              className={cn(
+                "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                cfgReadOnly
+                  ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                  : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+              )}
+            >
+              {cfgReadOnly ? t('on') : t('off')}
+            </button>
+          </div>
+
+          <div>
+            <label className="text-xs text-gray-400 uppercase tracking-widest">{t('maintenanceMessageLabel')}</label>
+            <textarea
+              value={cfgMessage}
+              onChange={(e) => setCfgMessage(e.target.value)}
+              rows={2}
+              className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs text-gray-400 uppercase tracking-widest">{t('maintenanceEndsAtLabel')}</label>
+            <input
+              type="datetime-local"
+              value={cfgEndsAt}
+              onChange={(e) => setCfgEndsAt(e.target.value)}
+              className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 px-3 py-2 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+            />
+          </div>
+
+          <button
+            onClick={saveConfig}
+            disabled={saving}
+            className="w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-60"
+          >
+            {saving ? t('uploading') : t('saveChanges')}
+          </button>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showMaintenancePreview && (
+          <motion.div
+            key="maintenance_preview"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+            onClick={() => setShowMaintenancePreview(false)}
+          >
+            <motion.div
+              initial={{ y: 12, opacity: 0, scale: 0.98 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: 12, opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.18 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl p-6 shadow-xl text-center"
+            >
+              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em] mb-3">{t('maintenanceTitle')}</div>
+              <div className="text-2xl font-bold tracking-tight mb-2">{t('maintenanceTitle')}</div>
+              <div className="text-sm text-gray-500 dark:text-gray-300">
+                {cfgMessage?.trim() ? cfgMessage.trim() : t('maintenanceHint')}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMaintenancePreview(false)}
+                className="mt-6 w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold"
+              >
+                {t('close')}
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+        <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('announcement')}</div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-gray-400 uppercase tracking-widest">{t('announcementTitleLabel')}</label>
+            <input
+              value={annTitle}
+              onChange={(e) => setAnnTitle(e.target.value)}
+              className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 px-3 py-2 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 uppercase tracking-widest">{t('announcementBodyLabel')}</label>
+            <textarea
+              value={annBody}
+              onChange={(e) => setAnnBody(e.target.value)}
+              rows={4}
+              className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={sendAnnouncement}
+              disabled={saving}
+              className="flex-1 bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-60"
+            >
+              {t('sendAnnouncement')}
+            </button>
+          </div>
+
+          <div className="pt-2 border-t border-gray-100 dark:border-zinc-800">
+            <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">
+              {t('announcementList')}
+            </div>
+            {annLoading ? (
+              <div className="flex justify-center py-6">
+                <div className="w-6 h-6 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
+              </div>
+            ) : announcements.length === 0 ? (
+              <div className="text-center py-6 text-gray-400 text-sm">{t('noAnnouncements')}</div>
+            ) : (
+              <div className="space-y-3">
+                {announcements.map((a) => (
+                  <div key={a.id} className="rounded-2xl border border-gray-100 dark:border-zinc-800 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-bold text-sm truncate">{a.title}</div>
+                        <div className="text-[11px] text-gray-500 dark:text-gray-300 mt-1 line-clamp-2 whitespace-pre-wrap">
+                          {a.body}
+                        </div>
+                        <div className="text-[10px] text-gray-400 mt-2">
+                          {a.active === false ? t('off') : t('on')}
+                          {a.createdAt ? ` · ${formatDistanceToNow(a.createdAt.toDate(), { addSuffix: true })}` : ''}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setAnnouncementActive(a.id, a.active === false)}
+                          disabled={saving}
+                          className="px-3 py-1.5 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors disabled:opacity-60"
+                        >
+                          {a.active === false ? t('enable') : t('disable')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteAnnouncement(a.id)}
+                          disabled={saving}
+                          className="px-3 py-1.5 rounded-full text-xs font-bold border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-60"
+                        >
+                          {t('delete')}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {showRejectDialog && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowRejectDialog(false)}
+        >
+          <motion.div
+            initial={{ y: 12, opacity: 0, scale: 0.98 }}
+            animate={{ y: 0, opacity: 1, scale: 1 }}
+            exit={{ y: 12, opacity: 0, scale: 0.98 }}
+            transition={{ duration: 0.18 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl p-6 shadow-xl"
+          >
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em] mb-1">{t('verification')}</div>
+                <div className="text-lg font-bold">{t('reject')}</div>
+              </div>
+              <button
+                onClick={() => setShowRejectDialog(false)}
+                className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                aria-label={t('close')}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-gray-400 uppercase tracking-widest mb-2 block">{t('rejectionReason')}</label>
+                <textarea
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  rows={4}
+                  placeholder={t('rejectionReasonPlaceholder')}
+                  className="w-full bg-gray-50 dark:bg-zinc-800 px-3 py-2 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none focus:ring-2 focus:ring-black/10 dark:focus:ring-white/10"
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={() => setShowRejectDialog(false)}
+                  className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  {t('cancel')}
+                </button>
+                <button
+                  onClick={() => {
+                    if (rejectTargetUid) {
+                      rejectRequest(rejectTargetUid, rejectReason);
+                      setShowRejectDialog(false);
+                    }
+                  }}
+                  className="flex-1 bg-red-500 text-white py-2 rounded-xl text-xs font-bold hover:bg-red-600 transition-colors"
+                >
+                  {t('reject')}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+
+      <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+        <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('quickProfile')}</div>
+        <div className="flex gap-2">
+          <input
+            value={quickUid}
+            onChange={(e) => setQuickUid(e.target.value)}
+            placeholder={t('uidPlaceholder')}
+            className="flex-1 bg-gray-50 dark:bg-zinc-800 px-3 py-2 rounded-xl border dark:border-zinc-700 text-sm focus:outline-none"
+          />
+          <button
+            onClick={() => quickUid.trim() && onOpenProfile(quickUid.trim())}
+            className="px-4 bg-black dark:bg-white text-white dark:text-black rounded-xl text-xs font-bold"
+          >
+            {t('open')}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+        <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('verification')}</div>
+        {loading ? (
+          <div className="flex justify-center py-10">
+            <div className="w-6 h-6 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
+          </div>
+        ) : requests.length === 0 ? (
+          <div className="text-center py-10 text-gray-400 text-sm">{t('noUsersFound')}</div>
+        ) : (
+          <div className="space-y-3">
+            {requests.map((r) => (
+              <div key={r.id} className="rounded-2xl border border-gray-100 dark:border-zinc-800 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-bold text-sm truncate">{r.data.displayName || r.data.uid}</div>
+                    <div className="text-[10px] text-gray-400 truncate">{r.data.uid}</div>
+                    <div className="text-[11px] text-gray-500 mt-2">
+                      {(r.data.category || '').toString()}
+                      {r.data.reason?.trim() ? ` · ${r.data.reason.trim()}` : ''}
+                    </div>
+                    {Array.isArray(r.data.evidenceLinks) && r.data.evidenceLinks.length > 0 && (
+                      <div className="mt-3 space-y-1">
+                        <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('evidence')}</div>
+                        <div className="space-y-1">
+                          {r.data.evidenceLinks.slice(0, 3).map((url, idx) => (
+                            <a
+                              key={`${url}_${idx}`}
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="block text-xs text-blue-600 dark:text-blue-400 truncate hover:underline"
+                            >
+                              {url}
+                            </a>
+                          ))}
+                          {r.data.evidenceLinks.length > 3 && (
+                            <div className="text-[11px] text-gray-400">+{r.data.evidenceLinks.length - 3}</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-gray-400">
+                    {r.data.status}
+                  </div>
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => onOpenProfile(r.data.uid)}
+                    className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    {t('openProfile')}
+                  </button>
+                </div>
+                {r.data.status === 'pending' && (
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => approveRequest(r.data.uid)}
+                      className="flex-1 bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold"
+                    >
+                      {t('approve')}
+                    </button>
+                    <button
+                      onClick={() => openRejectDialog(r.data.uid)}
+                      className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                    >
+                      {t('reject')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+        <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('reports')}</div>
+        {loadingReports ? (
+          <div className="flex justify-center py-10">
+            <div className="w-6 h-6 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
+          </div>
+        ) : reports.length === 0 ? (
+          <div className="text-center py-10 text-gray-400 text-sm">{t('noReports')}</div>
+        ) : (
+          <div className="space-y-3">
+            {reports.map((r) => (
+              <div key={r.id} className="rounded-2xl border border-gray-100 dark:border-zinc-800 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-bold text-sm truncate">{r.data.postId}</div>
+                    <div className="text-[10px] text-gray-400 truncate">
+                      {t('author')}: {r.data.authorUid} · {t('reporter')}: {r.data.reporterUid}
+                    </div>
+                  </div>
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-gray-400">
+                    {r.data.status}
+                  </div>
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => onOpenPostId(r.data.postId)}
+                    className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    {t('openPost')}
+                  </button>
+                  <button
+                    onClick={() => onOpenProfile(r.data.authorUid)}
+                    className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    {t('openAuthor')}
+                  </button>
+                </div>
+                {r.data.status === 'pending' && (
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => updateReportStatus(r.id, 'dismissed')}
+                      className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                    >
+                      {t('dismissReport')}
+                    </button>
+                    <button
+                      onClick={() => updateReportStatus(r.id, 'action_taken')}
+                      className="flex-1 bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold"
+                    >
+                      {t('markActionTaken')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Since standard ErrorBoundary requires a class, and we are having TS issues, 
 // let's use a simpler approach for now or ensure the class is correctly defined.
 // Actually, let's try one more time with a very standard class definition.
 
-export default function App() {
+function AppShell() {
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [offlineQueue, setOfflineQueue] = useState<QueuedAction[]>([]);
+  const { user, profile } = useAuth();
+  const [configLoaded, setConfigLoaded] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [maintenance, setMaintenance] = useState(false);
+  const [readOnly, setReadOnly] = useState(false);
+  const [maintenanceMessage, setMaintenanceMessage] = useState('');
+  const [maintenanceEndsAt, setMaintenanceEndsAt] = useState<Timestamp | null>(null);
+  const [legacyAnnouncement, setLegacyAnnouncement] = useState<AppAnnouncement | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [pendingMaintenanceDisable, setPendingMaintenanceDisable] = useState(() => {
+    try {
+      return localStorage.getItem('zimo_pending_disable_maintenance') === '1';
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
+    const handleOnline = () => {
+      setIsOffline(false);
+      // Sync queued actions when back online
+      syncOfflineQueue();
+    };
     const handleOffline = () => setIsOffline(true);
     
     window.addEventListener('online', handleOnline);
@@ -7218,6 +10054,16 @@ export default function App() {
       }
     }, 5000);
     
+    // Load queued actions from localStorage
+    const saved = localStorage.getItem('offlineQueue');
+    if (saved) {
+      try {
+        setOfflineQueue(JSON.parse(saved));
+      } catch (e) {
+        console.error('Failed to parse offline queue:', e);
+      }
+    }
+    
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -7225,10 +10071,173 @@ export default function App() {
     };
   }, []);
 
+  // Save queue to localStorage
+  useEffect(() => {
+    localStorage.setItem('offlineQueue', JSON.stringify(offlineQueue));
+  }, [offlineQueue]);
+
+  useEffect(() => {
+    const cfgRef = doc(db, 'config', 'app');
+    let unsub = () => {};
+    unsub = onSnapshot(
+      cfgRef,
+      (snap) => {
+        setConfigLoaded(true);
+        setConfigError(null);
+        if (!snap.exists()) {
+          setMaintenance(false);
+          setReadOnly(false);
+          setMaintenanceMessage('');
+          setMaintenanceEndsAt(null);
+          setLegacyAnnouncement(null);
+          return;
+        }
+        const data = snap.data() as {
+          maintenance?: boolean;
+          readOnly?: boolean;
+          maintenanceMessage?: string;
+          maintenanceEndsAt?: Timestamp | null;
+          announcement?: AppAnnouncement | null;
+        };
+        setMaintenance(data.maintenance === true);
+        setReadOnly(data.readOnly === true);
+        setMaintenanceMessage(String(data.maintenanceMessage || ''));
+        setMaintenanceEndsAt(data.maintenanceEndsAt instanceof Timestamp ? data.maintenanceEndsAt : null);
+        setLegacyAnnouncement(data.announcement && typeof data.announcement === 'object' ? data.announcement : null);
+      },
+      (err) => {
+        console.error('Failed to read config/app:', err);
+        // If rules deny access, keep safe defaults for non-admin clients.
+        setConfigLoaded(true);
+        setConfigError(String((err as any)?.code || (err as any)?.message || 'config_read_failed'));
+        setMaintenance(false);
+        setReadOnly(false);
+        setMaintenanceMessage('');
+        setMaintenanceEndsAt(null);
+        setLegacyAnnouncement(null);
+        // Stop retry loop if rules deny access.
+        unsub();
+      }
+    );
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setIsAdmin(false);
+      return;
+    }
+    const adminRef = doc(db, 'admins', user.uid);
+    let unsub = () => {};
+    unsub = onSnapshot(
+      adminRef,
+      (snap) => setIsAdmin(snap.exists()),
+      (err) => {
+        console.error('Failed to read admins doc:', err);
+        setIsAdmin(false);
+        // Stop retry loop if rules deny access.
+        unsub();
+      }
+    );
+    return unsub;
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!pendingMaintenanceDisable) return;
+    if (!user || !isAdmin) return;
+    if (!navigator.onLine) return;
+    if (maintenance !== true) {
+      try {
+        localStorage.removeItem('zimo_pending_disable_maintenance');
+      } catch {}
+      setPendingMaintenanceDisable(false);
+      return;
+    }
+
+    let cancelled = false;
+    const attempt = async () => {
+      try {
+        await withTimeout(
+          setDoc(
+            doc(db, 'config', 'app'),
+            { maintenance: false, updatedAt: serverTimestamp(), updatedBy: user.uid },
+            { merge: true }
+          ),
+          12000,
+          'disable_maintenance_timeout'
+        );
+        if (cancelled) return;
+        try {
+          localStorage.removeItem('zimo_pending_disable_maintenance');
+        } catch {}
+        setPendingMaintenanceDisable(false);
+      } catch {}
+    };
+
+    attempt();
+    const interval = window.setInterval(attempt, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [pendingMaintenanceDisable, user?.uid, isAdmin, maintenance]);
+
+  const addToOfflineQueue = useCallback((action: Omit<QueuedAction, 'id' | 'timestamp' | 'retryCount'>) => {
+    const newAction: QueuedAction = {
+      ...action,
+      id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      timestamp: Date.now(),
+      retryCount: 0,
+    };
+    setOfflineQueue(prev => [...prev, newAction]);
+  }, []);
+
+  const removeFromOfflineQueue = useCallback((id: string) => {
+    setOfflineQueue(prev => prev.filter(action => action.id !== id));
+  }, []);
+
+  const clearOfflineQueue = useCallback(() => {
+    setOfflineQueue([]);
+  }, []);
+
+  const syncOfflineQueue = useCallback(async () => {
+    if (isOffline || offlineQueue.length === 0 || !profile) return;
+
+    const actionsToSync = [...offlineQueue];
+    const successIds: string[] = [];
+
+    for (const action of actionsToSync) {
+      try {
+        if (action.type === 'create_post') {
+          // Create the post with original data
+          await addDoc(collection(db, 'posts'), {
+            ...action.data,
+            authorUid: profile.uid,
+            authorName: profile.displayName,
+            authorPhoto: profile.photoURL,
+            authorUsername: profile.username ? normalizeUsername(profile.username) : '',
+            createdAt: serverTimestamp(),
+            likes: 0,
+            likedBy: []
+          });
+          successIds.push(action.id);
+        }
+        // Other action types can be added here: like, comment, follow
+      } catch (err) {
+        console.error('Failed to sync action:', action.id, err);
+        // Keep in queue for next retry (don't remove)
+      }
+    }
+
+    if (successIds.length > 0) {
+      setOfflineQueue(prev => prev.filter(action => !successIds.includes(action.id)));
+    }
+  }, [isOffline, offlineQueue, profile]);
+
   return (
-    <SettingsProvider>
-      <AuthProvider>
-        <ToastProvider>
+    <AppConfigContext.Provider value={{ configLoaded, maintenance, readOnly, maintenanceMessage, maintenanceEndsAt, legacyAnnouncement, isAdmin, configError, pendingMaintenanceDisable }}>
+      <ToastProvider>
+        <VerificationNotificationProvider>
           {/* Connection indicator - slides out when offline */}
           <AnimatePresence>
             {isOffline && (
@@ -7239,13 +10248,80 @@ export default function App() {
                 className="fixed top-0 left-0 right-0 z-[100] bg-orange-500 text-white py-2 px-4 flex items-center justify-center gap-2 shadow-lg"
               >
                 <WifiOff size={16} className="animate-pulse" />
-                <span className="text-sm font-medium">Нет подключения. Попытка переподключения...</span>
+                <span className="text-sm font-medium">
+                  {offlineQueue.length > 0
+                    ? `Нет подключения. ${offlineQueue.length} действий в очереди.`
+                    : 'Нет подключения. Попытка переподключения...'}
+                </span>
               </motion.div>
             )}
           </AnimatePresence>
-          <SocialApp />
-        </ToastProvider>
+          <ErrorBoundary>
+            <SocialApp isOffline={isOffline} offlineQueue={offlineQueue} />
+          </ErrorBoundary>
+        </VerificationNotificationProvider>
+      </ToastProvider>
+    </AppConfigContext.Provider>
+  );
+}
+
+export default function App() {
+  return (
+    <SettingsProvider>
+      <AuthProvider>
+        <AppShell />
       </AuthProvider>
     </SettingsProvider>
   );
+}
+
+// Error Boundary for graceful error handling
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error?: Error;
+}
+
+class ErrorBoundary extends Component<{ children: ReactNode; fallback?: ReactNode }, ErrorBoundaryState> {
+  declare state: ErrorBoundaryState;
+  declare props: { children: ReactNode; fallback?: ReactNode };
+
+  constructor(props: { children: ReactNode; fallback?: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('ErrorBoundary caught an error:', error, errorInfo);
+    // Could send to error reporting service
+  }
+
+  render() {
+    if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4 bg-red-50 dark:bg-red-900/10 text-center">
+          <div className="max-w-md">
+            <h2 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">Something went wrong</h2>
+            <p className="text-gray-600 dark:text-gray-300 mb-4">
+              We're sorry, but something unexpected happened. Please try refreshing the page.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            >
+              Refresh Page
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
 }
