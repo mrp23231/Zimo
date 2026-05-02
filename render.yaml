@@ -2,5 +2,5 @@ services:
   - type: web
     name: minimalist-social-network
     env: static
-    buildCommand: npm ci --omit=optional && npm run build
+    buildCommand: rm -rf node_modules package-lock.json && npm ci --omit=optional && npm run build
     staticPublishPath: dist
