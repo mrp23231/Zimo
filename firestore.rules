@@ -42,6 +42,11 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isAdmin() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
@@ -50,12 +55,9 @@ service cloud.firestore {
       return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt']) &&
              data.uid == request.auth.uid &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 50 &&
-             data.email is string;
-    }
-
-    function isPrivateAccount(uid) {
-      return exists(/databases/$(database)/documents/users/$(uid)) &&
-        get(/databases/$(database)/documents/users/$(uid)).data.isPrivate == true;
+             data.email is string &&
+             !('verified' in data) &&
+             !('verifiedAt' in data);
     }
 
     function followDocId(followerUid, followingUid) {
@@ -67,16 +69,32 @@ service cloud.firestore {
         get(/databases/$(database)/documents/follows/$(followDocId(viewerUid, authorUid))).data.status == 'approved';
     }
 
-    function canViewUserContent(authorUid) {
-      return isAuthenticated() && (
-        request.auth.uid == authorUid ||
-        !isPrivateAccount(authorUid) ||
-        isApprovedFollower(request.auth.uid, authorUid)
-      );
+    function isPrivateAccount(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)) &&
+        get(/databases/$(database)/documents/users/$(uid)).data.isPrivate == true;
     }
 
-    function notHiddenFrom(data) {
-      return !('hiddenFrom' in data) || !(data.hiddenFrom is list) || !data.hiddenFrom.hasAny([request.auth.uid]);
+    function desiredPostVisibility(authorUid) {
+      return isPrivateAccount(authorUid) ? 'followers' : 'public';
+    }
+
+    function isPublicPost(data) {
+      // Back-compat: if `visibility` is missing, derive it from the author's current privacy setting.
+      return (('visibility' in data) && data.visibility == 'public') ||
+        (!('visibility' in data) && desiredPostVisibility(data.authorUid) == 'public');
+    }
+
+    function isFollowersPost(data) {
+      return (('visibility' in data) && data.visibility == 'followers') ||
+        (!('visibility' in data) && desiredPostVisibility(data.authorUid) == 'followers');
+    }
+
+    function canReadPost(data) {
+      return isAuthenticated() && (
+        request.auth.uid == data.authorUid ||
+        isPublicPost(data) ||
+        (isFollowersPost(data) && isApprovedFollower(request.auth.uid, data.authorUid))
+      );
     }
 
     function hasMedia(data) {
@@ -93,6 +111,7 @@ service cloud.firestore {
              (data.content.size() > 0 || hasMedia(data)) &&
              data.likes is number &&
              data.likedBy is list &&
+             (!('visibility' in data) || (data.visibility is string && (data.visibility == 'public' || data.visibility == 'followers'))) &&
              (!('imageUrls' in data) || data.imageUrls is list) &&
              (!('imageUrl' in data) || data.imageUrl is string) &&
              (!('hiddenFrom' in data) || data.hiddenFrom is list);
@@ -111,8 +130,56 @@ service cloud.firestore {
              (
                (data.text.size() > 0) ||
                (('imageUrl' in data) && data.imageUrl is string) ||
-               (('audioUrl' in data) && data.audioUrl is string)
+               (('stickerUrl' in data) && data.stickerUrl is string) ||
+               (('audioUrl' in data) && data.audioUrl is string) ||
+               (('audioPath' in data) && data.audioPath is string)
              );
+    }
+
+    function hasField(data, key) {
+      return key in data;
+    }
+
+    function safeLikeUpdate(beforeData, afterData) {
+      // Allows toggling the viewer's own like only and keeps `likes` in sync with list size.
+      //
+      // Supports back-compat docs that may not have likes/likedBy yet by treating missing as 0/[].
+      let beforeLikedBy = (hasField(beforeData, 'likedBy') && beforeData.likedBy is list) ? beforeData.likedBy : [];
+      let afterLikedBy = (hasField(afterData, 'likedBy') && afterData.likedBy is list) ? afterData.likedBy : [];
+      let beforeLikes = (hasField(beforeData, 'likes') && beforeData.likes is number) ? beforeData.likes : 0;
+      let afterLikes = (hasField(afterData, 'likes') && afterData.likes is number) ? afterData.likes : afterLikedBy.size();
+
+      return afterLikes == afterLikedBy.size() &&
+        beforeLikes == beforeLikedBy.size() &&
+        (
+          // like
+          (afterLikedBy.size() == beforeLikedBy.size() + 1 &&
+            afterLikedBy.hasAll(beforeLikedBy) &&
+            afterLikedBy.hasAny([request.auth.uid]) &&
+            !beforeLikedBy.hasAny([request.auth.uid])
+          ) ||
+          // unlike
+          (afterLikedBy.size() == beforeLikedBy.size() - 1 &&
+            beforeLikedBy.hasAll(afterLikedBy) &&
+            beforeLikedBy.hasAny([request.auth.uid]) &&
+            !afterLikedBy.hasAny([request.auth.uid])
+          )
+        );
+    }
+
+    function isValidFollow(data) {
+      return data.keys().hasAll(['followerUid', 'followingUid', 'status', 'createdAt']) &&
+        data.followerUid == request.auth.uid &&
+        data.followingUid is string && data.followingUid.size() > 0 &&
+        data.status is string && (data.status == 'pending' || data.status == 'approved' || data.status == 'rejected');
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['type', 'fromUid', 'toUid', 'createdAt', 'read']) &&
+        data.fromUid == request.auth.uid &&
+        data.toUid is string && data.toUid.size() > 0 &&
+        data.type is string && data.type.size() > 0 &&
+        data.read is bool;
     }
 
     // ===============================================================
@@ -126,17 +193,52 @@ service cloud.firestore {
         // prevent identity swaps
         request.resource.data.uid == resource.data.uid &&
         request.resource.data.email == resource.data.email &&
-        request.resource.data.createdAt == resource.data.createdAt;
+        request.resource.data.createdAt == resource.data.createdAt &&
+        // prevent self-verification / privilege escalation
+        (!('verified' in request.resource.data) || request.resource.data.verified == resource.data.verified) &&
+        (!('verifiedAt' in request.resource.data) || request.resource.data.verifiedAt == resource.data.verifiedAt);
+
+      // Allow admins to manage verification fields only.
+      allow update: if isAdmin() &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.email == resource.data.email &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['verified', 'verifiedAt']);
     }
 
     match /posts/{postId} {
-      allow read: if isAuthenticated() &&
-        canViewUserContent(resource.data.authorUid) &&
-        notHiddenFrom(resource.data);
-      allow create: if isAuthenticated() && isValidPost(request.resource.data);
+      allow read: if canReadPost(resource.data);
+      allow create: if isAuthenticated() &&
+        isValidPost(request.resource.data) &&
+        // Enforce that `visibility` matches the author's current privacy setting.
+        request.resource.data.visibility == desiredPostVisibility(request.auth.uid);
       allow update: if isAuthenticated() && (
-        (request.auth.uid == resource.data.authorUid && isValidPost(request.resource.data)) ||
-        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy']))
+        (request.auth.uid == resource.data.authorUid &&
+          isValidPost(request.resource.data) &&
+          request.resource.data.visibility == desiredPostVisibility(request.auth.uid)
+        ) ||
+        // Profile sync: allow the post author to update display fields without editing the post body.
+        (
+          request.auth.uid == resource.data.authorUid &&
+          request.resource.data.authorUid == resource.data.authorUid &&
+          request.resource.data.visibility == resource.data.visibility &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'authorName',
+            'authorPhoto',
+            'authorUsername',
+            'authorVerified'
+          ])
+        ) ||
+        // Admins may sync verification badge display on existing posts.
+        (
+          isAdmin() &&
+          request.resource.data.authorUid == resource.data.authorUid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authorVerified'])
+        ) ||
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy']) &&
+          safeLikeUpdate(resource.data, request.resource.data)
+        )
       );
       allow delete: if isAuthenticated() && request.auth.uid == resource.data.authorUid;
 
@@ -147,18 +249,19 @@ service cloud.firestore {
 
         allow read: if isAuthenticated() &&
           postDoc().exists() &&
-          canViewUserContent(postDoc().data.authorUid) &&
-          notHiddenFrom(postDoc().data);
+          canReadPost(postDoc().data);
 
         allow create: if isAuthenticated() &&
           postDoc().exists() &&
-          canViewUserContent(postDoc().data.authorUid) &&
-          notHiddenFrom(postDoc().data) &&
+          canReadPost(postDoc().data) &&
           isValidComment(request.resource.data);
 
         allow update: if isAuthenticated() && (
           // like/unlike
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy']) ||
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy']) &&
+            safeLikeUpdate(resource.data, request.resource.data)
+          ) ||
           // author edit (optional)
           (request.auth.uid == resource.data.authorUid && isValidComment(request.resource.data))
         );
@@ -171,7 +274,7 @@ service cloud.firestore {
 
     match /follows/{followId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.followerUid;
+      allow create: if isAuthenticated() && isValidFollow(request.resource.data);
       allow update: if isAuthenticated() && (
         // Profile owner approves/rejects.
         (
@@ -193,10 +296,62 @@ service cloud.firestore {
 
     match /notifications/{notificationId} {
       allow read: if isAuthenticated() && request.auth.uid == resource.data.toUid;
-      allow create: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidNotification(request.resource.data);
       allow update: if isAuthenticated() && request.auth.uid == resource.data.toUid && 
                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
       allow delete: if isAuthenticated() && request.auth.uid == resource.data.toUid;
+    }
+
+    match /reports/{reportId} {
+      // Allow users to report content; do not expose reports to clients by default.
+      allow create: if isAuthenticated() &&
+        request.resource.data.keys().hasAll(['postId', 'reporterUid', 'authorUid', 'createdAt', 'status']) &&
+        request.resource.data.reporterUid == request.auth.uid &&
+        request.resource.data.status == 'pending';
+      allow read: if isAdmin();
+      allow update: if isAdmin() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewedAt', 'reviewedBy']);
+      allow delete: if isAdmin();
+    }
+
+    match /verificationRequests/{uid} {
+      allow read: if isAuthenticated() &&
+        (request.auth.uid == uid || (resource.data.uid == request.auth.uid) || isAdmin());
+
+      // Users can create/refresh their own request doc (id == uid).
+      allow create, update: if isAuthenticated() &&
+        request.auth.uid == uid &&
+        request.resource.data.keys().hasAll(['uid', 'displayName', 'createdAt', 'status']) &&
+        request.resource.data.keys().hasOnly(['uid', 'displayName', 'createdAt', 'status', 'category', 'reason', 'evidenceLinks']) &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.displayName is string &&
+        request.resource.data.status == 'pending' &&
+        (!('category' in request.resource.data) || request.resource.data.category is string) &&
+        (!('reason' in request.resource.data) || request.resource.data.reason is string) &&
+        (!('evidenceLinks' in request.resource.data) || (request.resource.data.evidenceLinks is list && request.resource.data.evidenceLinks.size() <= 3));
+
+      allow delete: if isAdmin();
+
+      // Admins can approve/reject (and optionally stamp verifiedAt on the user doc separately).
+      allow update: if isAdmin();
+    }
+
+    match /admins/{uid} {
+      // Allows a user to check their own admin status without revealing others.
+      allow read: if isAuthenticated() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /config/{docId} {
+      // Public read so the app can show maintenance screen before login.
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /announcements/{announcementId} {
+      // Public read so everyone can see announcements.
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /messages/{messageId} {
@@ -214,6 +369,9 @@ service cloud.firestore {
           'deletedForAll',
           'imageUrl',
           'audioUrl',
+          'audioPath',
+          'audioState',
+          'audioMime',
           'audioDurationMs',
           'replyToId',
           'replyToText',

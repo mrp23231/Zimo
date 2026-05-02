@@ -6,12 +6,71 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    // MVP rules for this app:
-    // - only signed-in users can read/write
-    // Tighten later (per-user paths, size limits, content-type constraints).
+    function isImage() {
+      return request.resource != null &&
+        request.resource.contentType != null &&
+        request.resource.contentType.matches('image/.*');
+    }
+
+    function isAudio() {
+      return request.resource != null &&
+        request.resource.contentType != null &&
+        request.resource.contentType.matches('audio/.*');
+    }
+
+    function underSize(maxBytes) {
+      return request.resource.size < maxBytes;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid));
+    }
+
+    function isAllowedEvidence() {
+      return request.resource != null &&
+        request.resource.contentType != null &&
+        (
+          request.resource.contentType.matches('image/.*') ||
+          request.resource.contentType.matches('video/.*') ||
+          request.resource.contentType.matches('application/pdf')
+        );
+    }
+
+    // Public reads are disabled in the app (Firestore reads require auth),
+    // so keep Storage reads behind auth too.
+    //
+    // Allowed object layout used by the app:
+    // - profiles/{uid}/avatar.jpg
+    // - profiles/{uid}/header.jpg
+    // - posts/{uid}/{ts}_{id}.(jpg|gif)
+    // - chats/{senderUid}/{receiverUid}/... (images/audio)
+
+    match /profiles/{uid}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == uid && isImage() && underSize(10 * 1024 * 1024);
+    }
+
+    match /posts/{uid}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == uid && isImage() && underSize(20 * 1024 * 1024);
+    }
+
+    match /chats/{senderUid}/{receiverUid}/{fileName} {
+      allow read: if isAuthenticated() && (request.auth.uid == senderUid || request.auth.uid == receiverUid);
+      allow write: if isAuthenticated() && request.auth.uid == senderUid &&
+        (isImage() || isAudio()) &&
+        underSize(25 * 1024 * 1024);
+    }
+
+    match /verificationEvidence/{uid}/{fileName} {
+      allow read: if isAuthenticated() && (request.auth.uid == uid || isAdmin());
+      allow write: if isAuthenticated() && request.auth.uid == uid && isAllowedEvidence() && underSize(50 * 1024 * 1024);
+    }
+
+    // Deny everything else by default.
     match /{allPaths=**} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if false;
     }
   }
 }
-

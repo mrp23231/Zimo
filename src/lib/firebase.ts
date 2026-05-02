@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, type User } from 'firebase/auth';
-import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, query, where, orderBy, limit, getDocs, getDocFromServer, onSnapshot, serverTimestamp, Timestamp, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, addDoc, query, where, orderBy, limit, getDocs, getDocFromServer, onSnapshot, serverTimestamp, Timestamp, arrayUnion, arrayRemove, increment } from 'firebase/firestore';
 import { getStorage, uploadBytesResumable } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -24,7 +24,13 @@ const resolvedConfig = {
 
 export const app = initializeApp(resolvedConfig);
 const dbId = firebaseConfig.firestoreDatabaseId === '(default)' ? undefined : firebaseConfig.firestoreDatabaseId;
-export const db = getFirestore(app, dbId);
+// Some networks/proxies break Firestore's streaming transport (WebChannel), causing 400/404 spam.
+// Auto-detect long polling and disable fetch streams as a compatibility fallback.
+export const db = initializeFirestore(
+  app,
+  { experimentalAutoDetectLongPolling: true, useFetchStreams: false } as any,
+  dbId
+);
 export const auth = getAuth(app);
 export const storage = resolvedConfig.storageBucket
   ? getStorage(app, `gs://${resolvedConfig.storageBucket}`)
@@ -34,6 +40,7 @@ export const storage = resolvedConfig.storageBucket
 export { onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile };
 export type { User };
 export { uploadBytesResumable, serverTimestamp, Timestamp, arrayUnion, arrayRemove };
+export { increment };
 
 // Re-export Firestore functions
-export { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, query, where, orderBy, limit, getDocs, getDocFromServer, onSnapshot };
+export { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, addDoc, query, where, orderBy, limit, getDocs, getDocFromServer, onSnapshot };
