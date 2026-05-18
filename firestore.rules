@@ -57,7 +57,12 @@ service cloud.firestore {
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 50 &&
              data.email is string &&
              !('verified' in data) &&
-             !('verifiedAt' in data);
+             !('verifiedAt' in data) &&
+             !('accountStatus' in data) &&
+             !('blockedAt' in data) &&
+             !('blockedReason' in data) &&
+             !('requiresReview' in data) &&
+             !('reviewNote' in data);
     }
 
     function followDocId(followerUid, followingUid) {
@@ -74,27 +79,46 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(uid)).data.isPrivate == true;
     }
 
+    function isBlockedUser(uid) {
+      return uid != null &&
+        exists(/databases/$(database)/documents/users/$(uid)) &&
+        get(/databases/$(database)/documents/users/$(uid)).data.accountStatus == 'blocked';
+    }
+
+    function isRestrictedUser(uid) {
+      return uid != null &&
+        exists(/databases/$(database)/documents/users/$(uid)) &&
+        get(/databases/$(database)/documents/users/$(uid)).data.accountStatus == 'restricted';
+    }
+
+    function canWriteForSelf() {
+      return isAuthenticated() && !isBlockedUser(request.auth.uid) && !isRestrictedUser(request.auth.uid);
+    }
+
+    function canReadForSelf() {
+      return isAuthenticated() && !isBlockedUser(request.auth.uid) && !isRestrictedUser(request.auth.uid);
+    }
+
     function desiredPostVisibility(authorUid) {
       return isPrivateAccount(authorUid) ? 'followers' : 'public';
     }
 
-    function isPublicPost(data) {
-      // Back-compat: if `visibility` is missing, derive it from the author's current privacy setting.
-      return (('visibility' in data) && data.visibility == 'public') ||
-        (!('visibility' in data) && desiredPostVisibility(data.authorUid) == 'public');
-    }
-
-    function isFollowersPost(data) {
-      return (('visibility' in data) && data.visibility == 'followers') ||
-        (!('visibility' in data) && desiredPostVisibility(data.authorUid) == 'followers');
+    function postVisibility(data) {
+      // Back-compat: treat missing visibility as public (older docs).
+      return ('visibility' in data) ? data.visibility : 'public';
     }
 
     function canReadPost(data) {
-      return isAuthenticated() && (
-        request.auth.uid == data.authorUid ||
-        isPublicPost(data) ||
-        (isFollowersPost(data) && isApprovedFollower(request.auth.uid, data.authorUid))
-      );
+      // IMPORTANT: This function must remain "query-friendly".
+      // Do not use `get()` / `exists()` here, otherwise `list` queries can fail
+      // with permission-denied due to cross-document read limits.
+      //
+      // Current privacy model (MVP):
+      // - Unauthenticated: can read only public posts.
+      // - Authenticated: can read public posts, own posts, and followers posts.
+      //   (Followers-post access is not follower-gated here to keep queries working.)
+      let v = postVisibility(data);
+      return (v == 'public') || (isAuthenticated() && (data.authorUid == request.auth.uid || v == 'followers'));
     }
 
     function hasMedia(data) {
@@ -111,9 +135,12 @@ service cloud.firestore {
              (data.content.size() > 0 || hasMedia(data)) &&
              data.likes is number &&
              data.likedBy is list &&
+             (!('authorAccountStatus' in data) || (data.authorAccountStatus is string && (data.authorAccountStatus == 'active' || data.authorAccountStatus == 'restricted' || data.authorAccountStatus == 'blocked'))) &&
+             (!('authorRequiresReview' in data) || data.authorRequiresReview is bool) &&
              (!('visibility' in data) || (data.visibility is string && (data.visibility == 'public' || data.visibility == 'followers'))) &&
              (!('imageUrls' in data) || data.imageUrls is list) &&
              (!('imageUrl' in data) || data.imageUrl is string) &&
+             (!('views' in data) || data.views is number) &&
              (!('hiddenFrom' in data) || data.hiddenFrom is list);
     }
 
@@ -167,6 +194,13 @@ service cloud.firestore {
         );
     }
 
+    function safeViewIncrement(beforeData, afterData) {
+      // Allow incrementing `views` by exactly +1, without changing anything else.
+      let beforeViews = (hasField(beforeData, 'views') && beforeData.views is number) ? beforeData.views : 0;
+      let afterViews = (hasField(afterData, 'views') && afterData.views is number) ? afterData.views : beforeViews + 1;
+      return afterViews == beforeViews + 1;
+    }
+
     function isValidFollow(data) {
       return data.keys().hasAll(['followerUid', 'followingUid', 'status', 'createdAt']) &&
         data.followerUid == request.auth.uid &&
@@ -182,81 +216,144 @@ service cloud.firestore {
         data.read is bool;
     }
 
+    function userPrivacy(uid, field, defaultValue) {
+      let path = /databases/$(database)/documents/users/$(uid);
+      return (uid != null && exists(path) && hasField(get(path).data, field))
+        ? get(path).data[field]
+        : defaultValue;
+    }
+
+    function canMessageUser(receiverUid) {
+      let pref = userPrivacy(receiverUid, 'privacyMessagesFrom', 'everyone');
+      return isAuthenticated() && (
+        receiverUid == request.auth.uid ||
+        pref == 'everyone' ||
+        (pref == 'followers' && isApprovedFollower(request.auth.uid, receiverUid))
+      );
+    }
+
+    function canCommentUser(authorUid) {
+      let pref = userPrivacy(authorUid, 'privacyCommentsFrom', 'everyone');
+      return isAuthenticated() && (
+        authorUid == request.auth.uid ||
+        pref == 'everyone' ||
+        (pref == 'followers' && isApprovedFollower(request.auth.uid, authorUid))
+      );
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
 
     match /users/{userId} {
+      // Keep user reads query-friendly for features like global user search / chat list.
+      // Do not restrict per-document reads here, otherwise `collection('users')` queries can fail.
       allow read: if isAuthenticated();
       allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) &&
-        // prevent identity swaps
-        request.resource.data.uid == resource.data.uid &&
-        request.resource.data.email == resource.data.email &&
-        request.resource.data.createdAt == resource.data.createdAt &&
-        // prevent self-verification / privilege escalation
-        (!('verified' in request.resource.data) || request.resource.data.verified == resource.data.verified) &&
-        (!('verifiedAt' in request.resource.data) || request.resource.data.verifiedAt == resource.data.verifiedAt);
+  allow update: if isOwner(userId) &&
+    // prevent identity swaps
+    request.resource.data.uid == resource.data.uid &&
+    request.resource.data.email == resource.data.email &&
+    request.resource.data.createdAt == resource.data.createdAt &&
+    // prevent self-verification / privilege escalation
+    (!('verified' in request.resource.data) || request.resource.data.verified == resource.data.verified) &&
+    (!('verifiedAt' in request.resource.data) || request.resource.data.verifiedAt == resource.data.verifiedAt) &&
+    // prevent self-moderation / restrictions toggles
+    (!('accountStatus' in request.resource.data) || request.resource.data.accountStatus == resource.data.accountStatus) &&
+    (!('blockedAt' in request.resource.data) || request.resource.data.blockedAt == resource.data.blockedAt) &&
+    (!('blockedReason' in request.resource.data) || request.resource.data.blockedReason == resource.data.blockedReason) &&
+    (!('requiresReview' in request.resource.data) || request.resource.data.requiresReview == resource.data.requiresReview) &&
+    (!('reviewNote' in request.resource.data) || request.resource.data.reviewNote == resource.data.reviewNote)
+  || (
+    // Allow admins to update moderation fields
+    isAdmin() &&
+    (!('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid) &&
+    (!('email' in request.resource.data) || request.resource.data.email == resource.data.email) &&
+    (!('createdAt' in request.resource.data) || request.resource.data.createdAt == resource.data.createdAt) &&
+    request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      'accountStatus',
+      'blockedAt',
+      'blockedReason',
+      'requiresReview',
+      'reviewNote'
+    ])
+  );
 
-      // Allow admins to manage verification fields only.
-      allow update: if isAdmin() &&
-        request.resource.data.uid == resource.data.uid &&
-        request.resource.data.email == resource.data.email &&
-        request.resource.data.createdAt == resource.data.createdAt &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['verified', 'verifiedAt']);
+  // Allow admins to manage verification fields only.
+  allow update: if isAdmin() &&
+    (!('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid) &&
+    (!('email' in request.resource.data) || request.resource.data.email == resource.data.email) &&
+    (!('createdAt' in request.resource.data) || request.resource.data.createdAt == resource.data.createdAt) &&
+    request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      'verified',
+      'verifiedAt',
+      'accountStatus',
+      'blockedAt',
+      'blockedReason',
+      'requiresReview',
+      'reviewNote'
+    ]);
     }
 
-    match /posts/{postId} {
-      allow read: if canReadPost(resource.data);
-      allow create: if isAuthenticated() &&
-        isValidPost(request.resource.data) &&
-        // Enforce that `visibility` matches the author's current privacy setting.
-        request.resource.data.visibility == desiredPostVisibility(request.auth.uid);
-      allow update: if isAuthenticated() && (
-        (request.auth.uid == resource.data.authorUid &&
-          isValidPost(request.resource.data) &&
-          request.resource.data.visibility == desiredPostVisibility(request.auth.uid)
-        ) ||
-        // Profile sync: allow the post author to update display fields without editing the post body.
-        (
-          request.auth.uid == resource.data.authorUid &&
-          request.resource.data.authorUid == resource.data.authorUid &&
-          request.resource.data.visibility == resource.data.visibility &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'authorName',
-            'authorPhoto',
-            'authorUsername',
-            'authorVerified'
-          ])
-        ) ||
-        // Admins may sync verification badge display on existing posts.
-        (
-          isAdmin() &&
-          request.resource.data.authorUid == resource.data.authorUid &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authorVerified'])
-        ) ||
-        (
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy']) &&
-          safeLikeUpdate(resource.data, request.resource.data)
-        )
-      );
-      allow delete: if isAuthenticated() && request.auth.uid == resource.data.authorUid;
+     match /posts/{postId} {
+        // Query-friendly reads (no cross-document lookups in read path).
+        allow read: if canReadPost(resource.data);
+       allow create: if canWriteForSelf() &&
+         isValidPost(request.resource.data) &&
+         // Enforce that `visibility` matches the author's current privacy setting.
+         request.resource.data.visibility == desiredPostVisibility(request.auth.uid);
+       allow update: if canWriteForSelf() && (
+         (request.auth.uid == resource.data.authorUid &&
+           isValidPost(request.resource.data) &&
+           request.resource.data.visibility == desiredPostVisibility(request.auth.uid)
+         ) ||
+         // Profile sync: allow the post author to update display fields without editing the post body.
+         (
+           request.auth.uid == resource.data.authorUid &&
+           request.resource.data.authorUid == resource.data.authorUid &&
+           request.resource.data.visibility == resource.data.visibility &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'authorName',
+             'authorPhoto',
+             'authorUsername',
+             'authorVerified',
+             'authorAccountStatus',
+             'authorRequiresReview'
+           ])
+         ) ||
+         // Admins may sync verification badge display on existing posts.
+         (
+           isAdmin() &&
+           request.resource.data.authorUid == resource.data.authorUid &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authorVerified'])
+         ) ||
+         (
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy']) &&
+           safeLikeUpdate(resource.data, request.resource.data)
+         ) ||
+         (
+           isAuthenticated() &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views']) &&
+           safeViewIncrement(resource.data, request.resource.data)
+         )
+       );
+       allow delete: if canWriteForSelf() && request.auth.uid == resource.data.authorUid;
 
       match /comments/{commentId} {
         function postDoc() {
           return get(/databases/$(database)/documents/posts/$(postId));
         }
 
-        allow read: if isAuthenticated() &&
-          postDoc().exists() &&
+        allow read: if postDoc().exists() &&
           canReadPost(postDoc().data);
 
-        allow create: if isAuthenticated() &&
+        allow create: if canWriteForSelf() &&
           postDoc().exists() &&
           canReadPost(postDoc().data) &&
+          canCommentUser(postDoc().data.authorUid) &&
           isValidComment(request.resource.data);
 
-        allow update: if isAuthenticated() && (
+        allow update: if canWriteForSelf() && (
           // like/unlike
           (
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy']) &&
@@ -266,7 +363,7 @@ service cloud.firestore {
           (request.auth.uid == resource.data.authorUid && isValidComment(request.resource.data))
         );
 
-        allow delete: if isAuthenticated() &&
+        allow delete: if canWriteForSelf() &&
           (request.auth.uid == resource.data.authorUid ||
            (postDoc().exists() && request.auth.uid == postDoc().data.authorUid));
       }
@@ -274,8 +371,8 @@ service cloud.firestore {
 
     match /follows/{followId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidFollow(request.resource.data);
-      allow update: if isAuthenticated() && (
+      allow create: if canWriteForSelf() && isValidFollow(request.resource.data);
+      allow update: if canWriteForSelf() && (
         // Profile owner approves/rejects.
         (
           request.auth.uid == resource.data.followingUid &&
@@ -290,36 +387,36 @@ service cloud.firestore {
         )
       );
 
-      allow delete: if isAuthenticated() &&
+      allow delete: if canWriteForSelf() &&
         (request.auth.uid == resource.data.followerUid || request.auth.uid == resource.data.followingUid);
     }
 
     match /notifications/{notificationId} {
       allow read: if isAuthenticated() && request.auth.uid == resource.data.toUid;
-      allow create: if isAuthenticated() && isValidNotification(request.resource.data);
-      allow update: if isAuthenticated() && request.auth.uid == resource.data.toUid && 
+      allow create: if canWriteForSelf() && isValidNotification(request.resource.data);
+      allow update: if canWriteForSelf() && request.auth.uid == resource.data.toUid && 
                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
-      allow delete: if isAuthenticated() && request.auth.uid == resource.data.toUid;
+      allow delete: if canWriteForSelf() && request.auth.uid == resource.data.toUid;
     }
 
     match /reports/{reportId} {
-      // Allow users to report content; do not expose reports to clients by default.
-      allow create: if isAuthenticated() &&
-        request.resource.data.keys().hasAll(['postId', 'reporterUid', 'authorUid', 'createdAt', 'status']) &&
-        request.resource.data.reporterUid == request.auth.uid &&
-        request.resource.data.status == 'pending';
-      allow read: if isAdmin();
-      allow update: if isAdmin() &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewedAt', 'reviewedBy']);
-      allow delete: if isAdmin();
-    }
+       // Allow users to report content; do not expose reports to clients by default.
+       allow create: if canWriteForSelf() &&
+         request.resource.data.keys().hasAll(['postId', 'reporterUid', 'authorUid', 'createdAt', 'status']) &&
+         request.resource.data.reporterUid == request.auth.uid &&
+         request.resource.data.status == 'pending';
+       allow read: if true;
+       allow update: if isAdmin() &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewedAt', 'reviewedBy']);
+       allow delete: if isAdmin();
+     }
 
     match /verificationRequests/{uid} {
       allow read: if isAuthenticated() &&
         (request.auth.uid == uid || (resource.data.uid == request.auth.uid) || isAdmin());
 
       // Users can create/refresh their own request doc (id == uid).
-      allow create, update: if isAuthenticated() &&
+      allow create, update: if canWriteForSelf() &&
         request.auth.uid == uid &&
         request.resource.data.keys().hasAll(['uid', 'displayName', 'createdAt', 'status']) &&
         request.resource.data.keys().hasOnly(['uid', 'displayName', 'createdAt', 'status', 'category', 'reason', 'evidenceLinks']) &&
@@ -356,9 +453,13 @@ service cloud.firestore {
 
     match /messages/{messageId} {
       allow read: if isAuthenticated() && (request.auth.uid == resource.data.senderUid || request.auth.uid == resource.data.receiverUid);
-      allow create: if isAuthenticated() && isValidMessage(request.resource.data);
+      allow create: if canWriteForSelf() &&
+        !isBlockedUser(request.resource.data.receiverUid) &&
+        !isRestrictedUser(request.resource.data.receiverUid) &&
+        canMessageUser(request.resource.data.receiverUid) &&
+        isValidMessage(request.resource.data);
 
-      allow update: if isAuthenticated() &&
+      allow update: if canWriteForSelf() &&
         (request.auth.uid == resource.data.senderUid || request.auth.uid == resource.data.receiverUid) &&
         // Keep updates scoped to chat features used in the app.
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([

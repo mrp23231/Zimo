@@ -364,6 +364,45 @@ const VerifiedBadge = ({ title, className, animate }: { title: string; className
   </motion.span>
 );
 
+const AccountStatusBadges = ({
+  verified,
+  requiresReview,
+  accountStatus,
+  verifiedTitle,
+  reviewTitle,
+  restrictedTitle,
+  blockedTitle,
+  verifiedAnimate,
+}: {
+  verified?: boolean;
+  requiresReview?: boolean;
+  accountStatus?: UserProfile['accountStatus'];
+  verifiedTitle: string;
+  reviewTitle: string;
+  restrictedTitle: string;
+  blockedTitle: string;
+  verifiedAnimate?: boolean;
+}) => (
+  <span className="inline-flex items-center gap-1 align-middle">
+    {verified ? <VerifiedBadge title={verifiedTitle} animate={verifiedAnimate} /> : null}
+    {requiresReview ? (
+      <span className="inline-flex items-center" title={reviewTitle} aria-label={reviewTitle}>
+        <Info size={14} className="text-amber-500" />
+      </span>
+    ) : null}
+    {accountStatus === 'restricted' ? (
+      <span className="inline-flex items-center" title={restrictedTitle} aria-label={restrictedTitle}>
+        <Shield size={14} className="text-amber-600" />
+      </span>
+    ) : null}
+    {accountStatus === 'blocked' ? (
+      <span className="inline-flex items-center" title={blockedTitle} aria-label={blockedTitle}>
+        <Shield size={14} className="text-red-600" />
+      </span>
+    ) : null}
+  </span>
+);
+
 const matchesPostSearch = (post: Post, value: string) => {
   const query = normalizeSearchText(value);
   if (!query) return false;
@@ -444,11 +483,11 @@ const collectCommentBranchIds = (comments: Comment[], rootId: string) => {
 
 // --- Types ---
 
-interface UserProfile {
-  uid: string;
-  username?: string;
-  usernameLower?: string;
-  displayName: string;
+	interface UserProfile {
+	  uid: string;
+	  username?: string;
+	  usernameLower?: string;
+	  displayName: string;
   email: string;
   photoURL: string;
   headerURL?: string;
@@ -467,9 +506,17 @@ interface UserProfile {
   bookmarks?: string[];
   isOnline?: boolean;
   lastSeen?: Timestamp;
-  blockedUsers?: string[];
-  isPrivate?: boolean;
-  pinnedPostIds?: string[];
+	  blockedUsers?: string[];
+	  isPrivate?: boolean;
+	  privacyMessagesFrom?: 'everyone' | 'followers' | 'noone';
+	  privacyCommentsFrom?: 'everyone' | 'followers' | 'noone';
+	  pinnedPostIds?: string[];
+	  accountStatus?: 'active' | 'restricted' | 'blocked';
+	  blockedAt?: Timestamp;
+	  blockedReason?: string;
+	  requiresReview?: boolean;
+  reviewNote?: string;
+  mutedUsers?: string[];
   pushEnabled?: boolean;
   pushToken?: string;
   pushPrefs?: {
@@ -489,22 +536,25 @@ interface Follow {
   createdAt: Timestamp;
 }
 
-interface Post {
-  id: string;
-  authorUid: string;
-  authorName: string;
-  authorPhoto: string;
-  authorUsername?: string;
-  authorVerified?: boolean;
-  content: string;
-  imageUrl?: string;
-  imageUrls?: string[];
-  createdAt: Timestamp;
-  likes: number;
-  likedBy: string[];
-  repostId?: string;
-  repostCount?: number;
-}
+	interface Post {
+	  id: string;
+	  authorUid: string;
+	  authorName: string;
+	  authorPhoto: string;
+	  authorUsername?: string;
+	  authorVerified?: boolean;
+	  authorAccountStatus?: 'active' | 'restricted' | 'blocked';
+	  authorRequiresReview?: boolean;
+	  content: string;
+	  imageUrl?: string;
+	  imageUrls?: string[];
+	  createdAt: Timestamp;
+	  likes: number;
+	  likedBy: string[];
+	  views?: number;
+	  repostId?: string;
+	  repostCount?: number;
+	}
 
 interface CommentNode extends Comment {
   children: CommentNode[];
@@ -655,6 +705,41 @@ const translations = {
     canvasNotSupported: 'Your browser does not support image processing',
     storageUnauthorized: 'Storage permission denied (check Firebase Storage rules)',
     storageUnauthenticated: 'Please sign in again to upload',
+    storageCors: 'Upload blocked by CORS (configure Firebase Storage CORS for this origin, or disable Storage)',
+	    accountBlocked: 'Account blocked',
+	    accountRestricted: 'Account restricted',
+	    accountUnderReview: 'Account under review',
+	    privacyMessagesFrom: 'Who can message you',
+	    privacyCommentsFrom: 'Who can comment your posts',
+	    privacyEveryone: 'Everyone',
+	    privacyFollowers: 'Followers',
+	    privacyNoOne: 'No one',
+	    privacyFollowersHint: '“Followers” means approved followers.',
+	    onboardingEmptyTitle: 'How to start',
+	    onboardingEmptyPost: 'Create your first post',
+	    onboardingEmptyFollow: 'Follow a few people',
+	    onboardingEmptyPrivacy: 'Set your privacy',
+	    onboardingEmptyExplore: 'Explore',
+	    onboardingEmptyProfile: 'Profile',
+	    chatCannotMessageNoOne: 'This user is not accepting messages.',
+	    chatCannotMessageFollowers: 'This user accepts messages from followers only.',
+	    adminSetStatus: 'Set status',
+    adminUsers: 'Users',
+    filterAll: 'All',
+    filterReview: 'Review',
+    filterRestricted: 'Restricted',
+    filterBlocked: 'Blocked',
+    searchByNameUid: 'Search by name or UID',
+    adminActivate: 'Activate',
+    adminRestrict: 'Restrict',
+    adminBlock: 'Block',
+    adminUnblock: 'Unblock',
+    adminReviewFlag: 'Flag review',
+    adminClearReview: 'Clear review',
+    moderationNote: 'Moderation note',
+    moderationReason: 'Reason (optional)',
+    blockedCannotWrite: 'Your account is blocked. You cannot post or message.',
+    restrictedCannotWrite: 'Your account is restricted. Some actions are disabled.',
     storageRetryLimit: 'Upload failed (retry limit exceeded)',
     storageQuota: 'Storage quota exceeded',
      storageCanceled: 'Upload canceled',
@@ -818,6 +903,13 @@ const translations = {
     failedClearNotifications: 'Failed to clear notifications',
     failedMarkRead: 'Failed to mark as read',
     blockConfirm: 'Block {name}? This user’s posts will be hidden from your feed.',
+    mute: 'Mute',
+    muted: 'Muted',
+    unmute: 'Unmute',
+    muteConfirm: 'Mute {name}? You will not see their posts or notifications.',
+    unmuteConfirm: 'Unmute {name}?',
+    mutedToast: 'Muted {name}',
+    unmutedToast: 'Unmuted {name}',
     unblockConfirm: 'Unblock {name}?',
     blockedToast: 'Blocked {name}',
     unblockedToast: 'Unblocked {name}',
@@ -1016,6 +1108,41 @@ const translations = {
     canvasNotSupported: 'Ваш браузер не поддерживает обработку изображений',
     storageUnauthorized: 'Нет прав на загрузку (проверьте Firebase Storage rules)',
     storageUnauthenticated: 'Нужно заново войти, чтобы загружать файлы',
+    storageCors: 'Загрузка заблокирована CORS (настройте CORS для Firebase Storage под этот origin, или выключите Storage)',
+	    accountBlocked: 'Аккаунт заблокирован',
+	    accountRestricted: 'Аккаунт ограничен',
+	    accountUnderReview: 'Аккаунт на проверке',
+	    privacyMessagesFrom: 'Кто может писать вам',
+	    privacyCommentsFrom: 'Кто может комментировать ваши посты',
+	    privacyEveryone: 'Все',
+	    privacyFollowers: 'Подписчики',
+	    privacyNoOne: 'Никто',
+	    privacyFollowersHint: '«Подписчики» — это одобренные подписчики.',
+	    onboardingEmptyTitle: 'Как начать',
+	    onboardingEmptyPost: 'Создайте первый пост',
+	    onboardingEmptyFollow: 'Подпишитесь на людей',
+	    onboardingEmptyPrivacy: 'Настройте приватность',
+	    onboardingEmptyExplore: 'Перейти в «Поиск»',
+	    onboardingEmptyProfile: 'Открыть профиль',
+	    chatCannotMessageNoOne: 'Пользователь не принимает сообщения.',
+	    chatCannotMessageFollowers: 'Пользователь принимает сообщения только от подписчиков.',
+	    adminSetStatus: 'Статус аккаунта',
+    adminUsers: 'Пользователи',
+    filterAll: 'Все',
+    filterReview: 'Проверка',
+    filterRestricted: 'Ограничены',
+    filterBlocked: 'Заблокированы',
+    searchByNameUid: 'Поиск по имени или UID',
+    adminActivate: 'Активен',
+    adminRestrict: 'Ограничить',
+    adminBlock: 'Заблокировать',
+    adminUnblock: 'Разблокировать',
+    adminReviewFlag: 'Отметить на проверку',
+    adminClearReview: 'Снять проверку',
+    moderationNote: 'Заметка модерации',
+    moderationReason: 'Причина (необязательно)',
+    blockedCannotWrite: 'Ваш аккаунт заблокирован. Нельзя публиковать и писать.',
+    restrictedCannotWrite: 'Ваш аккаунт ограничен. Некоторые действия недоступны.',
     storageRetryLimit: 'Загрузка не удалась (слишком много попыток)',
     storageQuota: 'Превышена квота Storage',
     storageCanceled: 'Загрузка отменена',
@@ -1179,6 +1306,13 @@ const translations = {
     failedClearNotifications: 'Не удалось очистить уведомления',
     failedMarkRead: 'Не удалось отметить прочитанными',
     blockConfirm: 'Заблокировать {name}? Его посты будут скрыты.',
+    mute: 'Мьют',
+    muted: 'В мьюте',
+    unmute: 'Снять мьют',
+    muteConfirm: 'Замьютить {name}? Вы не будете видеть его посты и уведомления.',
+    unmuteConfirm: 'Снять мьют с {name}?',
+    mutedToast: 'Пользователь в мьюте: {name}',
+    unmutedToast: 'Мьют снят: {name}',
     unblockConfirm: 'Разблокировать {name}?',
     blockedToast: 'Пользователь заблокирован: {name}',
     unblockedToast: 'Пользователь разблокирован: {name}',
@@ -1294,8 +1428,16 @@ const translations = {
 type TranslationKey = keyof typeof translations.en;
 
 // Storage is strongly recommended (media as data URLs bloats Firestore and quickly hits limits).
-// Set `VITE_STORAGE_ENABLED=false` to force legacy behavior.
-const STORAGE_ENABLED = import.meta.env.VITE_STORAGE_ENABLED !== 'false';
+// Storage is opt-in for local dev (avoid CORS/tooling pitfalls), opt-out via env for prod.
+// - Dev default: disabled (stores images inline as dataURL)
+// - Prod default: enabled
+// Override explicitly with `VITE_STORAGE_ENABLED=true|false`.
+const STORAGE_ENABLED = (() => {
+  const v = import.meta.env.VITE_STORAGE_ENABLED;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return import.meta.env.DEV ? false : true;
+})();
 const MAX_IMAGE_BYTES = 700 * 1024;
 const MAX_IMAGE_DIM = 1280;
 const MAX_GIF_BYTES = 6 * 1024 * 1024;
@@ -1481,6 +1623,15 @@ const getStorageErrorMessage = (error: unknown, t: (key: TranslationKey) => stri
   const anyErr = error as any;
   const code: string = anyErr?.code || '';
   const message: string = anyErr?.message || '';
+  const serverResponse: string = anyErr?.serverResponse || '';
+
+  const isCorsError =
+    /cors|preflight|access control/i.test(message) ||
+    /cors|preflight|access control/i.test(serverResponse) ||
+    /net::err_failed/i.test(message);
+
+  if (isCorsError) return t('storageCors');
+
   switch (code) {
     case 'storage/unauthorized':
       return t('storageUnauthorized');
@@ -1585,7 +1736,7 @@ const useToast = () => {
 };
 
 const VerificationNotificationContext = createContext<{
-  addVerificationNotification: (notification: VerificationNotification) => void;
+  addVerificationNotification: (notification: Omit<VerificationNotification, 'id'>) => void;
 } | null>(null);
 
 const useVerificationNotifications = () => {
@@ -1596,10 +1747,10 @@ const useVerificationNotifications = () => {
 
 function VerificationNotificationProvider({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<VerificationNotification[]>([]);
-  const { verificationNotificationsEnabled } = useSettings();
+  const { verificationNotificationsEnabled, t } = useSettings();
   const { user } = useAuth();
 
-  const addVerificationNotification = (notification: VerificationNotification) => {
+  const addVerificationNotification = (notification: Omit<VerificationNotification, 'id'>) => {
     if (!verificationNotificationsEnabled) return;
     const id = Math.random().toString(36).substr(2, 9);
     setNotifications(prev => [...prev, { ...notification, id }]);
@@ -2203,32 +2354,108 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'posts'), orderBy('likes', 'desc'), limit(20));
-    const unsubscribe = safeOnSnapshot(q, (s: any) => {
-      let allPosts = s.docs.map(d => ({ id: d.id, ...d.data() } as Post));
-      if (profile?.blockedUsers && profile.blockedUsers.length > 0) {
+    // Important: Firestore rules can deny reads for "followers" visibility.
+    // If a query returns any unreadable document, the whole query fails with permission-denied.
+    // So we only query what we can always read: public posts + your own posts (merged client-side).
+    const merged = new Map<string, Post>();
+
+    const commit = () => {
+      let allPosts = Array.from(merged.values());
+      if (profile?.blockedUsers?.length) {
         allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
       }
-      // Filter out private account posts
-      allPosts = allPosts.filter(p => !privateAccountUids.includes(p.authorUid));
+      if (profile?.mutedUsers?.length) {
+        allPosts = allPosts.filter(p => !profile.mutedUsers?.includes(p.authorUid));
+      }
+      allPosts.sort((a, b) => (Number((b as any).likes || 0) - Number((a as any).likes || 0)));
       setTrendingPosts(allPosts.slice(0, 10));
       setLoading(false);
-    }, 'Не удалось загрузить тренды:');
-    return unsubscribe;
+    };
+
+    const unsubscribers: Array<() => void> = [];
+
+    const qPublic = query(
+      collection(db, 'posts'),
+      where('visibility', '==', 'public'),
+      limit(200)
+    );
+    unsubscribers.push(
+      safeOnSnapshot(qPublic, (s: any) => {
+        s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
+        commit();
+      }, 'Не удалось загрузить тренды:')
+    );
+
+    const qOwn = query(
+      collection(db, 'posts'),
+      where('authorUid', '==', profile.uid),
+      limit(40)
+    );
+    unsubscribers.push(
+      safeOnSnapshot(qOwn, (s: any) => {
+        s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
+        commit();
+      }, 'Не удалось загрузить свои посты (trending):')
+    );
+
+    return () => {
+      unsubscribers.forEach(fn => {
+        try { fn(); } catch {}
+      });
+    };
   }, [profile, privateAccountUids]);
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(SEARCH_POST_LIMIT));
-    const unsubscribe = safeOnSnapshot(q, (s: any) => {
-      let allPosts = s.docs.map(d => ({ id: d.id, ...d.data() } as Post));
+    const merged = new Map<string, Post>();
+
+    const commit = () => {
+      let allPosts = Array.from(merged.values());
       if (profile?.blockedUsers?.length) {
         allPosts = allPosts.filter(post => !profile.blockedUsers?.includes(post.authorUid));
       }
-      allPosts = allPosts.filter(post => post.authorUid === profile?.uid || !privateAccountUids.includes(post.authorUid));
-      setSearchablePosts(allPosts);
-    }, 'Не удалось загрузить посты для поиска:');
-    return unsubscribe;
+      if (profile?.mutedUsers?.length) {
+        allPosts = allPosts.filter(post => !profile.mutedUsers?.includes(post.authorUid));
+      }
+      allPosts.sort((a, b) => {
+        const aMs = (a.createdAt && typeof (a.createdAt as any).toMillis === 'function') ? (a.createdAt as any).toMillis() : 0;
+        const bMs = (b.createdAt && typeof (b.createdAt as any).toMillis === 'function') ? (b.createdAt as any).toMillis() : 0;
+        return bMs - aMs;
+      });
+      setSearchablePosts(allPosts.slice(0, SEARCH_POST_LIMIT));
+    };
+
+    const unsubscribers: Array<() => void> = [];
+
+    const qPublic = query(
+      collection(db, 'posts'),
+      where('visibility', '==', 'public'),
+      limit(Math.max(200, SEARCH_POST_LIMIT * 4))
+    );
+    unsubscribers.push(
+      safeOnSnapshot(qPublic, (s: any) => {
+        s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
+        commit();
+      }, 'Не удалось загрузить посты для поиска:')
+    );
+
+    const qOwn = query(
+      collection(db, 'posts'),
+      where('authorUid', '==', profile.uid),
+      limit(SEARCH_POST_LIMIT)
+    );
+    unsubscribers.push(
+      safeOnSnapshot(qOwn, (s: any) => {
+        s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
+        commit();
+      }, 'Не удалось загрузить свои посты (search):')
+    );
+
+    return () => {
+      unsubscribers.forEach(fn => {
+        try { fn(); } catch {}
+      });
+    };
   }, [profile, privateAccountUids]);
 
   useEffect(() => {
@@ -2302,10 +2529,18 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
               >
                 <img src={u.photoURL} loading="lazy" className="w-9 h-9 rounded-full object-cover" referrerPolicy="no-referrer" />
                 <div className="min-w-0">
-                  <div className="text-sm font-bold truncate inline-flex items-center gap-1">
-                    <span>{u.displayName}</span>
-                    {u.verified ? <VerifiedBadge title={t('verified')} /> : null}
-                  </div>
+	                  <div className="text-sm font-bold truncate inline-flex items-center gap-1">
+	                    <span>{u.displayName}</span>
+	                    <AccountStatusBadges
+	                      verified={u.verified}
+	                      requiresReview={u.requiresReview}
+	                      accountStatus={u.accountStatus}
+	                      verifiedTitle={t('verified')}
+	                      reviewTitle={t('accountUnderReview')}
+	                      restrictedTitle={t('accountRestricted')}
+	                      blockedTitle={t('accountBlocked')}
+	                    />
+	                  </div>
                   <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(u, profile?.uid, t)}</div>
                 </div>
               </button>
@@ -2328,10 +2563,18 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
                 <div className="flex items-center gap-3 mb-2">
                   <img src={post.authorPhoto} loading="lazy" className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="min-w-0">
-                    <div className="text-sm font-bold truncate inline-flex items-center gap-1">
-                      <span>{post.authorName}</span>
-                      {post.authorVerified ? <VerifiedBadge title={t('verified')} /> : null}
-                    </div>
+	                    <div className="text-sm font-bold truncate inline-flex items-center gap-1">
+	                      <span>{post.authorName}</span>
+	                      <AccountStatusBadges
+	                        verified={post.authorVerified}
+	                        requiresReview={post.authorRequiresReview}
+	                        accountStatus={post.authorAccountStatus}
+	                        verifiedTitle={t('verified')}
+	                        reviewTitle={t('accountUnderReview')}
+	                        restrictedTitle={t('accountRestricted')}
+	                        blockedTitle={t('accountBlocked')}
+	                      />
+	                    </div>
                     <div className="text-[10px] text-gray-400 truncate">{formatUsername(post.authorUsername)}</div>
                   </div>
                 </div>
@@ -2410,39 +2653,59 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
     }
 
     setLoading(true);
-    const bookmarkOrder = (profile.bookmarks ?? []) as string[];
-    const chunks = chunkItems<string>(bookmarkOrder, BOOKMARK_QUERY_CHUNK);
-    const byId = new Map<string, Post>();
-    const initializedChunks = new Set<number>();
-    let reportedHiddenPosts = false;
+    const bookmarkIds = (profile.bookmarks ?? []) as string[];
+    const postsMap = new Map<string, Post>();
+    let hasHidden = false;
+    let reported = false;
+    let cancelled = false;
 
-    const syncPosts = () => {
-      const ordered = bookmarkOrder
-        .map(id => byId.get(id))
-        .filter((post): post is Post => Boolean(post));
+    const finish = () => {
+      if (cancelled) return;
+      const ordered = bookmarkIds
+        .map(id => postsMap.get(id))
+        .filter((p): p is Post => Boolean(p));
       setBookmarkedPosts(ordered);
-      const ready = initializedChunks.size === chunks.length;
-      setLoading(!ready);
-      if (ready && !reportedHiddenPosts && ordered.length < bookmarkOrder.length) {
+      setLoading(false);
+      if (hasHidden && !reported) {
         showToast(t('bookmarkAccessLimited'), 'info');
-        reportedHiddenPosts = true;
+        reported = true;
       }
     };
 
-    const unsubscribers = chunks.map((ids, index) => {
-      const q = query(collection(db, 'posts'), where('__name__', 'in', ids));
-      return safeOnSnapshot(q, (s: any) => {
-        ids.forEach(id => byId.delete(id));
-        s.docs.forEach(d => {
-          byId.set(d.id, { id: d.id, ...d.data() } as Post);
-        });
-        initializedChunks.add(index);
-        syncPosts();
-      }, 'Не удалось загрузить закладки:');
-    });
+    const chunkSize = 10;
+    const processChunk = async (chunk: string[]) => {
+      const tasks = chunk.map(async (id) => {
+        try {
+          const docSnap = await getDoc(doc(db, 'posts', id));
+          if (docSnap.exists()) {
+            const data = docSnap.data() as Post;
+            postsMap.set(id, { id, ...data } as Post);
+          } else {
+            hasHidden = true;
+          }
+        } catch (err) {
+          // Permission denied or other error - treat as hidden
+          hasHidden = true;
+        }
+      });
+      await Promise.all(tasks);
+    };
+
+    const run = async () => {
+      for (let i = 0; i < bookmarkIds.length; i += chunkSize) {
+        if (cancelled) break;
+        const chunk = bookmarkIds.slice(i, i + chunkSize);
+        await processChunk(chunk);
+      }
+      if (!cancelled) {
+        finish();
+      }
+    };
+
+    run();
 
     return () => {
-      unsubscribers.forEach(unsub => unsub());
+      cancelled = true;
     };
   }, [profile?.bookmarks, showToast, t]);
 
@@ -2510,17 +2773,22 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
 
   if (suggestions.length === 0) return null;
 
-  const handleFollow = async (targetUid: string) => {
-    if (!profile) return;
-    const targetUser = users.find(user => user.uid === targetUid);
-    const status = targetUser?.isPrivate ? 'pending' : 'approved';
-    await setDoc(doc(db, 'follows', profile.uid + '_' + targetUid), {
-      followerUid: profile.uid,
-      followingUid: targetUid,
-      status,
-      postNotifications: false,
-      createdAt: serverTimestamp()
-    });
+	  const handleFollow = async (targetUid: string) => {
+	    if (!profile) return;
+	    const targetUser = users.find(user => user.uid === targetUid);
+	    const status = targetUser?.isPrivate ? 'pending' : 'approved';
+	    const followRef = doc(db, 'follows', profile.uid + '_' + targetUid);
+	    // Recreate doc to avoid hitting restrictive `update` rules when it already exists.
+	    try {
+	      await deleteDoc(followRef);
+	    } catch {}
+	    await setDoc(followRef, {
+	      followerUid: profile.uid,
+	      followingUid: targetUid,
+	      status,
+	      postNotifications: false,
+	      createdAt: serverTimestamp()
+	    });
     
     await addDoc(collection(db, 'notifications'), {
       type: targetUser?.isPrivate ? 'follow_request' : 'follow',
@@ -2553,10 +2821,18 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
 	                alt=""
 	              />
 	              <div className="min-w-0">
-	                <div className="text-sm font-bold truncate inline-flex items-center gap-1">
-	                  <span>{user.displayName}</span>
-	                  {user.verified ? <VerifiedBadge title={t('verified')} /> : null}
-	                </div>
+		                <div className="text-sm font-bold truncate inline-flex items-center gap-1">
+		                  <span>{user.displayName}</span>
+		                  <AccountStatusBadges
+		                    verified={user.verified}
+		                    requiresReview={user.requiresReview}
+		                    accountStatus={user.accountStatus}
+		                    verifiedTitle={t('verified')}
+		                    reviewTitle={t('accountUnderReview')}
+		                    restrictedTitle={t('accountRestricted')}
+		                    blockedTitle={t('accountBlocked')}
+		                  />
+		                </div>
                 <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(user, profile?.uid, t)}</div>
               </div>
             </button>
@@ -2756,10 +3032,18 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isA
                   >
                     <img src={u.photoURL} loading="lazy" className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="min-w-0">
-                    <div className="text-sm font-bold truncate inline-flex items-center gap-1">
-                      <span>{u.displayName}</span>
-                      {u.verified ? <VerifiedBadge title={t('verified')} /> : null}
-                    </div>
+	                    <div className="text-sm font-bold truncate inline-flex items-center gap-1">
+	                      <span>{u.displayName}</span>
+	                      <AccountStatusBadges
+	                        verified={u.verified}
+	                        requiresReview={u.requiresReview}
+	                        accountStatus={u.accountStatus}
+	                        verifiedTitle={t('verified')}
+	                        reviewTitle={t('accountUnderReview')}
+	                        restrictedTitle={t('accountRestricted')}
+	                        blockedTitle={t('accountBlocked')}
+	                      />
+	                    </div>
                     <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(u, profile?.uid, t)}</div>
                   </div>
                 </button>
@@ -3253,10 +3537,18 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         >
           <img src={post.authorPhoto || 'https://picsum.photos/seed/user/100/100'} className="w-11 h-11 rounded-full object-cover border border-gray-100 dark:border-zinc-800" referrerPolicy="no-referrer" />
           <div>
-            <div className="font-bold text-sm tracking-tight inline-flex items-center gap-1">
-              <span>{post.authorName}</span>
-              {post.authorVerified ? <VerifiedBadge title={t('verified')} /> : null}
-            </div>
+	            <div className="font-bold text-sm tracking-tight inline-flex items-center gap-1">
+	              <span>{post.authorName}</span>
+	              <AccountStatusBadges
+	                verified={post.authorVerified}
+	                requiresReview={post.authorRequiresReview}
+	                accountStatus={post.authorAccountStatus}
+	                verifiedTitle={t('verified')}
+	                reviewTitle={t('accountUnderReview')}
+	                restrictedTitle={t('accountRestricted')}
+	                blockedTitle={t('accountBlocked')}
+	              />
+	            </div>
             {post.authorUsername && (
               <div className="text-[10px] text-gray-400">{formatUsername(post.authorUsername)}</div>
             )}
@@ -3593,17 +3885,20 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   );
 }
 
-function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onClearHashtag, onOpenImage, onShowLikes }: { 
+function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onClearHashtag, onOpenImage, onShowLikes, onGoExplore, onGoProfile }: { 
   onOpenPost: (post: Post) => void, 
   onOpenProfile: (uid: string) => void, 
   searchHashtag?: string | null, 
   onClearHashtag?: () => void,
   onOpenImage: (url: string) => void,
   onShowLikes: (postId: string) => void,
+  onGoExplore?: () => void,
+  onGoProfile?: () => void,
   key?: string 
 }) {
   const { t } = useSettings();
   const { readOnly, legacyAnnouncement } = useAppConfig();
+  const { showToast } = useToast();
   const [posts, setPosts] = useState<Post[]>([]);
   const [postsLimit, setPostsLimit] = useState(20);
   const [hasMorePosts, setHasMorePosts] = useState(true);
@@ -3616,10 +3911,17 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
    const [error, setError] = useState<string | null>(null);
    const [listHeight, setListHeight] = useState(600);
    const [showPollOptions, setShowPollOptions] = useState(false);
-   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
-   const [pollError, setPollError] = useState<string | null>(null);
-   const listContainerRef = useRef<HTMLDivElement>(null);
-   const [showAnnouncement, setShowAnnouncement] = useState(false);
+		   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
+		   const [pollError, setPollError] = useState<string | null>(null);
+		   const listContainerRef = useRef<HTMLDivElement>(null);
+		   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+		   const focusComposer = () => {
+		     try {
+		       composerRef.current?.focus();
+		       composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		     } catch {}
+		   };
+		   const [showAnnouncement, setShowAnnouncement] = useState(false);
    const [announcement, setAnnouncement] = useState<AppAnnouncement | null>(null);
    const [announcementSource, setAnnouncementSource] = useState<'collection' | 'config' | 'none'>('none');
    const announcementsDeniedRef = useRef(false);
@@ -3722,9 +4024,15 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 	    return unsubscribe;
 	  }, [profile]);
 
-  useEffect(() => {
-    if (!profile) return;
-    // Avoid permission-denied: never query a mixed set of documents where some are unreadable.
+     useEffect(() => {
+       if (!profile) return;
+       // If the user is blocked or restricted, do not attempt to fetch posts.
+       if (profile.accountStatus && (profile.accountStatus === 'blocked' || profile.accountStatus === 'restricted')) {
+         setPosts([]);
+         setHasMorePosts(false);
+         return;
+       }
+       // Avoid permission-denied: never query a mixed set of documents where some are unreadable.
     // Instead, fetch:
     // - global: public posts + your own posts
     // - following: public+followers posts from approved follows + your own posts
@@ -3733,14 +4041,14 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     const unsubscribers: Array<() => void> = [];
 
     const blocked = Array.isArray(profile.blockedUsers) ? profile.blockedUsers : [];
+    const muted = Array.isArray(profile.mutedUsers) ? profile.mutedUsers : [];
     const merged = new Map<string, Post>();
 
     const commit = () => {
       let all = Array.from(merged.values());
 
-      if (blocked.length > 0) {
-        all = all.filter(p => !blocked.includes(p.authorUid));
-      }
+      if (blocked.length > 0) all = all.filter(p => !blocked.includes(p.authorUid));
+      if (muted.length > 0) all = all.filter(p => !muted.includes(p.authorUid));
 
       if (searchHashtag) {
         const q = searchHashtag.toLowerCase();
@@ -3852,19 +4160,22 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     if ((!trimmed && images.length === 0 && !showPollOptions) || !profile || uploading) return;
 
     try {
-      const postData: any = {
-        authorUid: profile.uid,
-        authorName: profile.displayName,
-        authorPhoto: profile.photoURL,
-        authorUsername: profile.username ? normalizeUsername(profile.username) : '',
-        authorVerified: profile.verified === true,
-        visibility: profile.isPrivate ? 'followers' : 'public',
-        content: trimmed,
-        imageUrls: images,
-        createdAt: serverTimestamp(),
-        likes: 0,
-        likedBy: []
-      };
+	      const postData: any = {
+	        authorUid: profile.uid,
+	        authorName: profile.displayName,
+	        authorPhoto: profile.photoURL,
+	        authorUsername: profile.username ? normalizeUsername(profile.username) : '',
+	        authorVerified: profile.verified === true,
+	        authorAccountStatus: profile.accountStatus || 'active',
+	        authorRequiresReview: profile.requiresReview === true,
+	        visibility: profile.isPrivate ? 'followers' : 'public',
+	        content: trimmed,
+	        imageUrls: images,
+	        createdAt: serverTimestamp(),
+	        likes: 0,
+	        likedBy: [],
+	        views: 0
+	      };
 
       // Add poll data if poll is enabled
       if (showPollOptions) {
@@ -3911,6 +4222,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 
       setContent('');
       setImageUrls([]);
+      setUploadTasks([]);
       setShowPollOptions(false);
       setPollOptions(['', '']);
       setPollError(null);
@@ -3987,10 +4299,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     setUploading(true);
     setError(null);
 
-    // Semaphore for concurrent uploads
-    const semaphore = new Array(MAX_CONCURRENT_UPLOADS).fill(null);
-    let currentIndex = 0;
-
     const runTask = async (task: UploadTask) => {
       // Update status to uploading
       setUploadTasks(prev => prev.map(t => 
@@ -3999,22 +4307,35 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 
       try {
         let resultUrl: string;
+        let fallbackUrl: string | null = null;
         
         if (task.file.type === 'image/gif') {
           // GIF handling (no compression)
+          fallbackUrl = task.preview;
           if (!STORAGE_ENABLED) {
             resultUrl = task.preview;
           } else {
             const filename = `posts/${profile.uid}/${Date.now()}_${task.id}.gif`;
-            resultUrl = await uploadBlobToStorage(filename, task.file, (pct) => {
-              setUploadTasks(prev => prev.map(t => 
-                t.id === task.id ? { ...t, progress: pct } : t
-              ));
-            });
+            try {
+              resultUrl = await uploadBlobToStorage(filename, task.file, (pct) => {
+                setUploadTasks(prev => prev.map(t =>
+                  t.id === task.id ? { ...t, progress: pct } : t
+                ));
+              });
+            } catch (err: any) {
+              const msg = getStorageErrorMessage(err, t);
+              if (msg === t('storageCors') && fallbackUrl) {
+                showToast(msg, 'info');
+                resultUrl = fallbackUrl;
+              } else {
+                throw err;
+              }
+            }
           }
         } else {
           // Regular image with compression
           const { dataUrl, bytes } = await readAndCompressImage(task.file);
+          fallbackUrl = dataUrl;
           if (bytes > MAX_IMAGE_BYTES) {
             throw new Error('image_too_large_after_compression');
           }
@@ -4024,18 +4345,26 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           } else {
             const blob = await dataUrlToBlob(dataUrl);
             const filename = `posts/${profile.uid}/${Date.now()}_${task.id}.jpg`;
-            resultUrl = await uploadBlobToStorage(filename, blob, (pct) => {
-              setUploadTasks(prev => prev.map(t => 
-                t.id === task.id ? { ...t, progress: pct } : t
-              ));
-            });
+            try {
+              resultUrl = await uploadBlobToStorage(filename, blob, (pct) => {
+                setUploadTasks(prev => prev.map(t =>
+                  t.id === task.id ? { ...t, progress: pct } : t
+                ));
+              });
+            } catch (err: any) {
+              const msg = getStorageErrorMessage(err, t);
+              if (msg === t('storageCors') && fallbackUrl) {
+                showToast(msg, 'info');
+                resultUrl = fallbackUrl;
+              } else {
+                throw err;
+              }
+            }
           }
         }
 
         // Mark as completed
-        setUploadTasks(prev => prev.map(t => 
-          t.id === task.id ? { ...t, status: 'completed' as const, progress: 100 } : t
-        ));
+        setUploadTasks(prev => prev.filter(t => t.id !== task.id));
         
         // Add to imageUrls
         setImageUrls(prev => [...prev, resultUrl]);
@@ -4057,39 +4386,40 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           t.id === task.id ? { ...t, status: 'error' as const, error: errorMsg } : t
         ));
         setError(errorMsg);
-      } finally {
-        // Release semaphore
-        semaphore.pop();
-        // Start next pending task if available
-        if (currentIndex < newTasks.length) {
-          const nextTask = newTasks[currentIndex];
-          currentIndex++;
-          semaphore.push(null);
-          runTask(nextTask);
-        } else {
-          // Check if all tasks are done
-          const allDone = newTasks.every(t => 
-            t.status === 'completed' || t.status === 'error' || t.status === 'cancelled'
-          );
-          if (allDone) {
-            setUploading(false);
-          }
-        }
       }
     };
 
-    // Start initial batch of concurrent uploads
-    const initialBatch = newTasks.slice(0, MAX_CONCURRENT_UPLOADS);
-    currentIndex = initialBatch.length;
-    const promises = initialBatch.map(task => runTask(task));
+    // Concurrency-limited queue
+    let active = 0;
+    let finished = 0;
+    let nextIndex = 0;
 
-    // Cleanup on unmount or new upload
-    return () => {
-      // Cancel all running tasks if needed
-      setUploadTasks(prev => prev.map(t => 
-        newTasks.some(nt => nt.id === t.id) ? { ...t, status: 'cancelled' as const } : t
-      ));
+    const onOneFinished = () => {
+      finished += 1;
+      if (finished >= newTasks.length) {
+        setUploading(false);
+        // Allow selecting the same file(s) again
+        input.value = '';
+      }
     };
+
+    const startNext = () => {
+      while (active < MAX_CONCURRENT_UPLOADS && nextIndex < newTasks.length) {
+        const task = newTasks[nextIndex++];
+        active += 1;
+        void runTask(task)
+          .catch(() => {
+            // runTask already reports errors to UI; keep queue moving
+          })
+          .finally(() => {
+            active -= 1;
+            onOneFinished();
+            startNext();
+          });
+      }
+    };
+
+    startNext();
   };
 
   const addImageUrl = () => {
@@ -4108,18 +4438,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   };
 
   const clearImages = () => {
-    // Cancel all pending/uploading tasks
-    setUploadTasks(prev => prev.map(task => 
-      task.status === 'pending' || task.status === 'uploading'
-        ? { ...task, status: 'cancelled' as const }
-        : task
-    ));
-    // Remove completed/error tasks after a delay
-    setTimeout(() => {
-      setUploadTasks(prev => prev.filter(task => 
-        task.status !== 'completed' && task.status !== 'error'
-      ));
-    }, 3000);
+    setUploadTasks([]);
     setImageUrls([]);
     if (uploading) {
       setUploading(false);
@@ -4304,14 +4623,15 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           )}
         </AnimatePresence>
 
-        <form onSubmit={handlePost} className="mb-8 bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800 shadow-sm">
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder={t('postPlaceholder')}
-            className="w-full bg-transparent resize-none focus:outline-none text-lg min-h-[100px]"
-            maxLength={1000}
-          />
+	        <form onSubmit={handlePost} className="mb-8 bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800 shadow-sm">
+	          <textarea
+	            ref={composerRef}
+	            value={content}
+	            onChange={(e) => setContent(e.target.value)}
+	            placeholder={t('postPlaceholder')}
+	            className="w-full bg-transparent resize-none focus:outline-none text-lg min-h-[100px]"
+	            maxLength={1000}
+	          />
           
           {/* Upload previews with progress */}
           {(uploadTasks.length > 0 || imageUrls.length > 0) && (
@@ -4331,7 +4651,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               ))}
               
               {/* Show uploading tasks */}
-              {uploadTasks.map((task) => (
+              {uploadTasks.filter(t => t.status !== 'completed').map((task) => (
                 <div key={task.id} className="relative group">
                   <img src={task.preview} loading="lazy" className="w-full h-32 object-cover rounded-xl border dark:border-zinc-800 opacity-75" alt="Uploading..." />
                   
@@ -4378,7 +4698,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                   )}
                   
                   {/* Remove completed/error tasks */}
-                  {(task.status === 'completed' || task.status === 'error') && (
+                  {task.status === 'error' && (
                     <button 
                       type="button"
                       onClick={() => removeUploadTask(task.id)}
@@ -4497,11 +4817,54 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             </button>
             </div>
           </div>
-        </form>
+	        </form>
 
-        <div className="space-y-6">
-          <AnimatePresence mode="popLayout">
-            {posts.map((post) => (
+          {!uploading && posts.length === 0 && (
+            <div className="mb-8 bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-dashed border-gray-200 dark:border-zinc-800">
+              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">{t('onboardingEmptyTitle')}</div>
+              <div className="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300">
+                <div className="flex items-center gap-2">
+                  <Check size={16} className="text-emerald-500" />
+                  <span>{t('onboardingEmptyPost')}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Check size={16} className="text-emerald-500" />
+                  <span>{t('onboardingEmptyFollow')}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Check size={16} className="text-emerald-500" />
+                  <span>{t('onboardingEmptyPrivacy')}</span>
+                </div>
+              </div>
+              <div className="mt-5 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={focusComposer}
+                  className="px-4 py-2 rounded-full text-xs font-bold bg-black dark:bg-white text-white dark:text-black"
+                >
+                  {t('onboardingEmptyPost')}
+                </button>
+                <button
+                  type="button"
+                  onClick={onGoExplore}
+                  className="px-4 py-2 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  {t('onboardingEmptyExplore')}
+                </button>
+                <button
+                  type="button"
+                  onClick={onGoProfile}
+                  className="px-4 py-2 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  {t('onboardingEmptyProfile')}
+                </button>
+              </div>
+            </div>
+          )}
+
+	        <div className="space-y-6">
+	          <AnimatePresence mode="popLayout">
+	            {posts.map((post) => (
               <PostCard 
                 key={post.id} 
                 post={post} 
@@ -4587,6 +4950,8 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [editBirthdate, setEditBirthdate] = useState('');
   const [editHideEmail, setEditHideEmail] = useState(false);
   const [editIsPrivate, setEditIsPrivate] = useState(false);
+  const [editPrivacyMessagesFrom, setEditPrivacyMessagesFrom] = useState<UserProfile['privacyMessagesFrom']>('everyone');
+  const [editPrivacyCommentsFrom, setEditPrivacyCommentsFrom] = useState<UserProfile['privacyCommentsFrom']>('everyone');
   const [savingProfile, setSavingProfile] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushPrefs, setPushPrefs] = useState(() => ({
@@ -4663,19 +5028,6 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
     fetchProfile();
 
-    // Без индекса: убираем orderBy(createdAt). Сортируем на клиенте.
-    const q = query(collection(db, 'posts'), where('authorUid', '==', effectiveUid), limit(200));
-    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
-      const posts = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() } as Post));
-      posts.sort((a, b) => {
-        const aMs = (a.createdAt && typeof (a.createdAt as any).toMillis === 'function') ? (a.createdAt as any).toMillis() : 0;
-        const bMs = (b.createdAt && typeof (b.createdAt as any).toMillis === 'function') ? (b.createdAt as any).toMillis() : 0;
-        return bMs - aMs;
-      });
-      setUserPosts(posts);
-      setLoading(false);
-    }, 'Не удалось загрузить посты профиля:');
-
     const followersQ = query(collection(db, 'follows'), where('followingUid', '==', effectiveUid));
     const followingQ = query(collection(db, 'follows'), where('followerUid', '==', effectiveUid));
     
@@ -4722,7 +5074,6 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         }
       }, 'Не удалось загрузить статус подписки:');
       return () => {
-        unsubscribe();
         unsubFollowers();
         unsubFollowing();
         unsubFollowStatus();
@@ -4730,24 +5081,55 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     }
 
     return () => {
-      unsubscribe();
       unsubFollowers();
       unsubFollowing();
     };
   }, [effectiveUid, currentProfile]);
 
   useEffect(() => {
+    if (!effectiveUid) return;
+
+    // Firestore rules can deny reads for "followers" visibility.
+    // If a query returns any unreadable doc, the whole query fails with permission-denied.
+    // So when viewing чужой профиль без approved-follow, ограничиваемся public-постами.
+    const shouldLimitToPublic = !isOwnProfile && !isFollowing;
+    // Без индекса: убираем orderBy(createdAt). Сортируем на клиенте.
+    const q = shouldLimitToPublic
+      ? query(
+          collection(db, 'posts'),
+          where('authorUid', '==', effectiveUid),
+          where('visibility', '==', 'public'),
+          limit(200)
+        )
+      : query(collection(db, 'posts'), where('authorUid', '==', effectiveUid), limit(200));
+    const unsub = safeOnSnapshot(q, (snapshot: any) => {
+      const posts = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() } as Post));
+      posts.sort((a, b) => {
+        const aMs = (a.createdAt && typeof (a.createdAt as any).toMillis === 'function') ? (a.createdAt as any).toMillis() : 0;
+        const bMs = (b.createdAt && typeof (b.createdAt as any).toMillis === 'function') ? (b.createdAt as any).toMillis() : 0;
+        return bMs - aMs;
+      });
+      setUserPosts(posts);
+      setLoading(false);
+    }, 'Не удалось загрузить посты профиля:');
+
+    return unsub;
+  }, [effectiveUid, isOwnProfile, isFollowing]);
+
+  useEffect(() => {
     if (!isOwnProfile || !targetProfile) return;
     setEditName(targetProfile.displayName || '');
-    setEditBio(targetProfile.bio || '');
-    setEditCity(targetProfile.city || '');
-    setEditBirthdate(targetProfile.birthdate || '');
-    setEditHideEmail(!!targetProfile.hideEmail);
-    setEditIsPrivate(!!targetProfile.isPrivate);
-    setPushEnabled(!!targetProfile.pushEnabled);
-    setPushPrefs({
-      likes: targetProfile.pushPrefs?.likes ?? true,
-      comments: targetProfile.pushPrefs?.comments ?? true,
+	    setEditBio(targetProfile.bio || '');
+	    setEditCity(targetProfile.city || '');
+	    setEditBirthdate(targetProfile.birthdate || '');
+	    setEditHideEmail(!!targetProfile.hideEmail);
+	    setEditIsPrivate(!!targetProfile.isPrivate);
+	    setEditPrivacyMessagesFrom(targetProfile.privacyMessagesFrom || 'everyone');
+	    setEditPrivacyCommentsFrom(targetProfile.privacyCommentsFrom || 'everyone');
+	    setPushEnabled(!!targetProfile.pushEnabled);
+	    setPushPrefs({
+	      likes: targetProfile.pushPrefs?.likes ?? true,
+	      comments: targetProfile.pushPrefs?.comments ?? true,
       follows: targetProfile.pushPrefs?.follows ?? true,
       messages: targetProfile.pushPrefs?.messages ?? true,
     });
@@ -4868,14 +5250,16 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     }
     setSavingProfile(true);
     try {
-      const updates = {
-        displayName: editName.trim(),
-        bio: editBio.trim(),
-        city: editCity.trim(),
-        birthdate: editBirthdate || '',
-        hideEmail: editHideEmail,
-        isPrivate: editIsPrivate
-      };
+	      const updates = {
+	        displayName: editName.trim(),
+	        bio: editBio.trim(),
+	        city: editCity.trim(),
+	        birthdate: editBirthdate || '',
+	        hideEmail: editHideEmail,
+	        isPrivate: editIsPrivate,
+	        privacyMessagesFrom: editPrivacyMessagesFrom || 'everyone',
+	        privacyCommentsFrom: editPrivacyCommentsFrom || 'everyone'
+	      };
       await updateDoc(doc(db, 'users', currentProfile.uid), updates);
       setTargetProfile(prev => prev ? { ...prev, ...updates } : null);
       setNewBio(editBio.trim());
@@ -4967,25 +5351,31 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     });
   };
 
-  const handleFollow = async () => {
-    if (!currentProfile || !effectiveUid) return;
-    if (readOnly) {
-      showToast(t('readOnlyMode'), 'info');
-      return;
-    }
-    const followId = currentProfile.uid + '_' + effectiveUid;
-    if (isFollowing || followRequested) {
-      await deleteDoc(doc(db, 'follows', followId));
-    } else {
-      // If target account is private, create a pending request instead of direct follow
-      const status = targetProfile?.isPrivate ? 'pending' : 'approved';
-      await setDoc(doc(db, 'follows', followId), {
-        followerUid: currentProfile.uid,
-        followingUid: effectiveUid,
-        status,
-        postNotifications: false,
-        createdAt: serverTimestamp()
-      });
+	  const handleFollow = async () => {
+	    if (!currentProfile || !effectiveUid) return;
+	    if (readOnly) {
+	      showToast(t('readOnlyMode'), 'info');
+	      return;
+	    }
+	    const followId = currentProfile.uid + '_' + effectiveUid;
+	    if (isFollowing || followRequested) {
+	      await deleteDoc(doc(db, 'follows', followId));
+	    } else {
+	      // If target account is private, create a pending request instead of direct follow
+	      const status = targetProfile?.isPrivate ? 'pending' : 'approved';
+	      const followRef = doc(db, 'follows', followId);
+	      // If the doc already exists (e.g. previously rejected), `setDoc` becomes an UPDATE and can be denied by rules.
+	      // Recreate it explicitly to hit `allow create`.
+	      try {
+	        await deleteDoc(followRef);
+	      } catch {}
+	      await setDoc(followRef, {
+	        followerUid: currentProfile.uid,
+	        followingUid: effectiveUid,
+	        status,
+	        postNotifications: false,
+	        createdAt: serverTimestamp()
+	      });
       
       // Notification - for both private and public accounts
       await addDoc(collection(db, 'notifications'), {
@@ -5032,6 +5422,36 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
           showToast(t('blockFailed'), "error");
         }
       }
+    }
+  };
+
+  const handleMute = async () => {
+    if (!currentProfile || !targetProfile) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
+    const isMuted = currentProfile.mutedUsers?.includes(targetProfile.uid);
+    if (isMuted) {
+      if (!window.confirm(t('unmuteConfirm').replace('{name}', targetProfile.displayName))) return;
+      try {
+        await updateDoc(doc(db, 'users', currentProfile.uid), {
+          mutedUsers: arrayRemove(targetProfile.uid),
+        });
+        showToast(t('unmutedToast').replace('{name}', targetProfile.displayName), 'success');
+      } catch {
+        showToast(t('genericError'), 'error');
+      }
+      return;
+    }
+    if (!window.confirm(t('muteConfirm').replace('{name}', targetProfile.displayName))) return;
+    try {
+      await updateDoc(doc(db, 'users', currentProfile.uid), {
+        mutedUsers: arrayUnion(targetProfile.uid),
+      });
+      showToast(t('mutedToast').replace('{name}', targetProfile.displayName), 'info');
+    } catch {
+      showToast(t('genericError'), 'error');
     }
   };
 
@@ -5140,12 +5560,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         <div className="absolute -bottom-10 left-1/2 -translate-x-1/2">
           <div className="relative w-24 h-24 group">
             <img 
-              src={targetProfile.photoURL} 
+              src={targetProfile.photoURL || undefined} 
               className={cn(
                 "w-24 h-24 rounded-full border-4 border-white dark:border-zinc-900 shadow-lg object-cover transition-opacity",
                 uploadingAvatar ? "opacity-50" : ""
               )} 
               referrerPolicy="no-referrer" 
+              alt=""
             />
             {isOwnProfile && (
               <label className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-full opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity">
@@ -5173,11 +5594,11 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         <div className="mb-8" />
       )}
 
-      <div className="text-center mb-12">
-        <h1 className="text-2xl font-bold tracking-tight inline-flex items-center justify-center gap-2">
-          <span>{targetProfile.displayName}</span>
-          {targetProfile.verified ? (
-            <button
+	      <div className="text-center mb-12">
+	        <h1 className="text-2xl font-bold tracking-tight inline-flex items-center justify-center gap-2">
+	          <span>{targetProfile.displayName}</span>
+	          {targetProfile.verified ? (
+	            <button
               type="button"
               onClick={() => {
                 setShowVerifiedHow(false);
@@ -5185,27 +5606,61 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
               }}
               className="inline-flex items-center"
               aria-label={t('verifiedInfoTitle')}
-            >
-              <VerifiedBadge title={t('verified')} animate={animateVerifiedBadge} />
-            </button>
-          ) : null}
-        </h1>
-        {usernameDisplay && (
-          <p className="text-gray-500 text-sm mt-1">{usernameDisplay}</p>
-        )}
-        {emailDisplay && (
+	            >
+	              <VerifiedBadge title={t('verified')} animate={animateVerifiedBadge} />
+	            </button>
+	          ) : null}
+		          <AccountStatusBadges
+		            verified={false}
+		            requiresReview={targetProfile.requiresReview}
+		            accountStatus={targetProfile.accountStatus}
+		            verifiedTitle={t('verified')}
+		            reviewTitle={t('accountUnderReview')}
+		            restrictedTitle={t('accountRestricted')}
+		            blockedTitle={t('accountBlocked')}
+		          />
+		        </h1>
+	        {usernameDisplay && (
+	          <p className="text-gray-500 text-sm mt-1">{usernameDisplay}</p>
+	        )}
+	        {emailDisplay && (
           <p className="text-[11px] text-gray-400 mt-1">{emailDisplay}</p>
         )}
-        {profileMetaParts.length > 0 && (
-          <p className="text-[11px] text-gray-400 mt-2">
-            {profileMetaParts.join(' · ')}
-          </p>
-        )}
-        
-        {isOwnProfile ? (
-          isEditing ? (
-            <div className="mt-4 max-w-xs mx-auto">
-              <textarea
+	        {profileMetaParts.length > 0 && (
+	          <p className="text-[11px] text-gray-400 mt-2">
+	            {profileMetaParts.join(' · ')}
+	          </p>
+	        )}
+
+          {(targetProfile.requiresReview ||
+            targetProfile.accountStatus === 'restricted' ||
+            targetProfile.accountStatus === 'blocked') && (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              {targetProfile.requiresReview ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-900/40">
+                  <Info size={12} />
+                  {t('accountUnderReview')}
+                </span>
+              ) : null}
+              {targetProfile.accountStatus === 'restricted' ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-900/40">
+                  <Shield size={12} />
+                  {t('accountRestricted')}
+                </span>
+              ) : null}
+              {targetProfile.accountStatus === 'blocked' ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-900/40">
+                  <Shield size={12} />
+                  {t('accountBlocked')}
+                </span>
+              ) : null}
+            </div>
+          )}
+	        
+	        {isOwnProfile ? (
+	          isEditing ? (
+	            <div className="mt-4 max-w-xs mx-auto">
+	              <textarea
                 value={newBio}
                 onChange={(e) => setNewBio(e.target.value)}
                 className="w-full p-2 rounded-lg border dark:bg-zinc-900 dark:border-zinc-800 text-sm"
@@ -5264,6 +5719,18 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 )}
               >
                 {currentProfile?.blockedUsers?.includes(targetProfile.uid) ? t('blocked') : t('block')}
+              </button>
+              <button
+                type="button"
+                onClick={handleMute}
+                className={cn(
+                  "px-4 py-2 rounded-full font-bold transition-all text-xs",
+                  currentProfile?.mutedUsers?.includes(targetProfile.uid)
+                    ? "bg-amber-500 text-black"
+                    : "bg-gray-100 dark:bg-zinc-800 text-gray-400 hover:text-amber-500"
+                )}
+              >
+                {currentProfile?.mutedUsers?.includes(targetProfile.uid) ? t('muted') : t('mute')}
               </button>
             </div>
           </div>
@@ -5387,10 +5854,18 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 >
                   <img src={u.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="text-left">
-                    <div className="font-bold text-sm inline-flex items-center gap-1">
-                      <span>{u.displayName}</span>
-                      {u.verified ? <VerifiedBadge title={t('verified')} /> : null}
-                    </div>
+	                    <div className="font-bold text-sm inline-flex items-center gap-1">
+	                      <span>{u.displayName}</span>
+	                      <AccountStatusBadges
+	                        verified={u.verified}
+	                        requiresReview={u.requiresReview}
+	                        accountStatus={u.accountStatus}
+	                        verifiedTitle={t('verified')}
+	                        reviewTitle={t('accountUnderReview')}
+	                        restrictedTitle={t('accountRestricted')}
+	                        blockedTitle={t('accountBlocked')}
+	                      />
+	                    </div>
                     <div className="text-[10px] text-gray-400 uppercase tracking-widest">{getUserSecondaryLabel(u, currentProfile?.uid, t)}</div>
                   </div>
                 </button>
@@ -5418,10 +5893,18 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 >
                   <img src={u.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="text-left">
-                    <div className="font-bold text-sm inline-flex items-center gap-1">
-                      <span>{u.displayName}</span>
-                      {u.verified ? <VerifiedBadge title={t('verified')} /> : null}
-                    </div>
+	                    <div className="font-bold text-sm inline-flex items-center gap-1">
+	                      <span>{u.displayName}</span>
+	                      <AccountStatusBadges
+	                        verified={u.verified}
+	                        requiresReview={u.requiresReview}
+	                        accountStatus={u.accountStatus}
+	                        verifiedTitle={t('verified')}
+	                        reviewTitle={t('accountUnderReview')}
+	                        restrictedTitle={t('accountRestricted')}
+	                        blockedTitle={t('accountBlocked')}
+	                      />
+	                    </div>
                     <div className="text-[10px] text-gray-400 uppercase tracking-widest">{getUserSecondaryLabel(u, currentProfile?.uid, t)}</div>
                   </div>
                 </button>
@@ -5515,13 +5998,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                     {editHideEmail ? t('on') : t('off')}
                   </button>
                 </div>
-                <div className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
-                  <div>
-                    <div className="text-sm font-bold">{t('privateAccount')}</div>
-                    <div className="text-[11px] text-gray-400">{t('privateAccountHint')}</div>
-                  </div>
-                  <button
-                    onClick={() => setEditIsPrivate(!editIsPrivate)}
+	                <div className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+	                  <div>
+	                    <div className="text-sm font-bold">{t('privateAccount')}</div>
+	                    <div className="text-[11px] text-gray-400">{t('privateAccountHint')}</div>
+	                  </div>
+	                  <button
+	                    onClick={() => setEditIsPrivate(!editIsPrivate)}
                     className={cn(
                       "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
                       editIsPrivate
@@ -5530,8 +6013,93 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                     )}
                   >
                     {editIsPrivate ? t('on') : t('off')}
-                  </button>
-                </div>
+	                  </button>
+	                </div>
+
+                  <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+                    <div className="text-sm font-bold">{t('privacyMessagesFrom')}</div>
+                    <div className="text-[11px] text-gray-400 mt-0.5">{t('privacyFollowersHint')}</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditPrivacyMessagesFrom('everyone')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                          editPrivacyMessagesFrom === 'everyone'
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('privacyEveryone')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditPrivacyMessagesFrom('followers')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                          editPrivacyMessagesFrom === 'followers'
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('privacyFollowers')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditPrivacyMessagesFrom('noone')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                          editPrivacyMessagesFrom === 'noone'
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('privacyNoOne')}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+                    <div className="text-sm font-bold">{t('privacyCommentsFrom')}</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditPrivacyCommentsFrom('everyone')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                          editPrivacyCommentsFrom === 'everyone'
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('privacyEveryone')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditPrivacyCommentsFrom('followers')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                          editPrivacyCommentsFrom === 'followers'
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('privacyFollowers')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditPrivacyCommentsFrom('noone')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                          editPrivacyCommentsFrom === 'noone'
+                            ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                            : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        )}
+                      >
+                        {t('privacyNoOne')}
+                      </button>
+                    </div>
+                  </div>
                 <button
                   onClick={handleSaveProfile}
                   disabled={savingProfile}
@@ -6106,13 +6674,11 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
       const qSent = query(
         collection(db, 'messages'),
         where('senderUid', '==', profile.uid),
-        orderBy('createdAt', 'desc'),
         limit(30)
       );
       const qReceived = query(
         collection(db, 'messages'),
         where('receiverUid', '==', profile.uid),
-        orderBy('createdAt', 'desc'),
         limit(30)
       );
 
@@ -6223,11 +6789,19 @@ function Messages({ onSelectChat, onOpenProfile }: { onSelectChat: (uid: string)
                         )}
                       </div>
                         <div>
-                          <div className="font-bold text-sm inline-flex items-center gap-2">
-                            <span className="inline-flex items-center gap-1">
-                              <span>{user.displayName}</span>
-                              {user.verified ? <VerifiedBadge title={t('verified')} /> : null}
-                            </span>
+	                          <div className="font-bold text-sm inline-flex items-center gap-2">
+	                            <span className="inline-flex items-center gap-1">
+	                              <span>{user.displayName}</span>
+	                              <AccountStatusBadges
+	                                verified={user.verified}
+	                                requiresReview={user.requiresReview}
+	                                accountStatus={user.accountStatus}
+	                                verifiedTitle={t('verified')}
+	                                reviewTitle={t('accountUnderReview')}
+	                                restrictedTitle={t('accountRestricted')}
+	                                blockedTitle={t('accountBlocked')}
+	                              />
+	                            </span>
                             {unreadCounts[user.uid] > 0 && (
                               <span className="bg-red-500 text-white text-[8px] px-1.5 py-0.5 rounded-full">
                                 {unreadCounts[user.uid]}
@@ -6288,6 +6862,8 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [receiver, setReceiver] = useState<UserProfile | null>(null);
+  const [canMessageReceiver, setCanMessageReceiver] = useState(true);
+  const [cannotMessageReason, setCannotMessageReason] = useState<string | null>(null);
   const receiverHandle = receiver ? formatUsername(receiver.username) : '';
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -6335,29 +6911,29 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     []
   );
 
-	  useEffect(() => {
-	    if (!profile) return;
+		  useEffect(() => {
+		    if (!profile) return;
 
-	    const unsubReceiver = safeOnSnapshot(doc(db, 'users', receiverUid), (d: any) => {
-	      setReceiver(d.data() as UserProfile);
-	    }, 'Не удалось загрузить профиль получателя (chat):');
+		    const unsubReceiver = safeOnSnapshot(doc(db, 'users', receiverUid), (d: any) => {
+		      setReceiver(d.data() as UserProfile);
+		    }, 'Не удалось загрузить профиль получателя (chat):');
 	    
-	    const q = query(
-	      collection(db, 'messages'),
-	      orderBy('createdAt', 'asc'),
-	      limit(50)
-	    );
+      // IMPORTANT: never query a broad "all messages" set and filter client-side.
+      // Firestore rules will (correctly) reject such queries, since they could return
+      // messages the user isn't allowed to read.
+      const merged = new Map<string, Message>();
 
-	    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
-	      const allMsgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
-	      const filtered = allMsgs.filter(m => 
-	        (m.senderUid === profile.uid && m.receiverUid === receiverUid) ||
-	        (m.senderUid === receiverUid && m.receiverUid === profile.uid)
-	      );
-	      setMessages(filtered);
+      const commit = (items: Message[]) => {
+        const sorted = [...items].sort((a, b) => {
+          const at = a.createdAt?.toDate?.().getTime?.() ?? 0;
+          const bt = b.createdAt?.toDate?.().getTime?.() ?? 0;
+          return at - bt;
+        });
+
+        setMessages(sorted);
 
       // Mark unread messages as read
-      filtered.forEach(m => {
+      sorted.forEach(m => {
         if (m.senderUid === receiverUid && m.receiverUid === profile.uid && !m.read) {
           updateDoc(doc(db, 'messages', m.id), { read: true }).catch(console.error);
         }
@@ -6367,23 +6943,96 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
       const lastSeenId = lastSeenAtBottomId.current;
       if (!isAtBottomRef.current) {
         if (!lastSeenId) {
-          lastSeenAtBottomId.current = filtered[filtered.length - 1]?.id ?? null;
+          lastSeenAtBottomId.current = sorted[sorted.length - 1]?.id ?? null;
           setUnseenIncoming(0);
         } else {
-          const idx = filtered.findIndex(m => m.id === lastSeenId);
-          const after = idx >= 0 ? filtered.slice(idx + 1) : filtered;
+          const idx = sorted.findIndex(m => m.id === lastSeenId);
+          const after = idx >= 0 ? sorted.slice(idx + 1) : sorted;
           setUnseenIncoming(after.filter(m => m.senderUid === receiverUid).length);
         }
       } else {
-        lastSeenAtBottomId.current = filtered[filtered.length - 1]?.id ?? null;
+        lastSeenAtBottomId.current = sorted[sorted.length - 1]?.id ?? null;
         setUnseenIncoming(0);
       }
-	    }, 'Не удалось загрузить сообщения (chat):');
+      };
+
+      const mergeDocs = (docs: Array<{ id: string; data: () => any }>) => {
+        docs.forEach((d) => merged.set(d.id, ({ id: d.id, ...d.data() } as Message)));
+        commit(Array.from(merged.values()));
+      };
+
+      const outQuery = query(
+        collection(db, 'messages'),
+        where('senderUid', '==', profile.uid),
+        where('receiverUid', '==', receiverUid),
+        orderBy('createdAt', 'asc'),
+        limit(50)
+      );
+      const inQuery = query(
+        collection(db, 'messages'),
+        where('senderUid', '==', receiverUid),
+        where('receiverUid', '==', profile.uid),
+        orderBy('createdAt', 'asc'),
+        limit(50)
+      );
+
+      const unsubOut = safeOnSnapshot(outQuery, (snapshot: any) => mergeDocs(snapshot.docs), 'Не удалось загрузить сообщения (chat out):');
+      const unsubIn = safeOnSnapshot(inQuery, (snapshot: any) => mergeDocs(snapshot.docs), 'Не удалось загрузить сообщения (chat in):');
 	    return () => {
-	      unsubscribe();
+	      unsubOut();
+        unsubIn();
 	      unsubReceiver();
 	    };
 	  }, [receiverUid, profile?.uid]);
+
+    useEffect(() => {
+      let cancelled = false;
+      const run = async () => {
+        if (!profile || !receiverUid) return;
+        if (!receiver) return;
+
+        // Defaults: everyone can message.
+        const pref = receiver.privacyMessagesFrom || 'everyone';
+        if (pref === 'everyone' || receiver.uid === profile.uid) {
+          if (!cancelled) {
+            setCanMessageReceiver(true);
+            setCannotMessageReason(null);
+          }
+          return;
+        }
+
+        if (pref === 'noone') {
+          if (!cancelled) {
+            setCanMessageReceiver(false);
+            setCannotMessageReason(t('chatCannotMessageNoOne'));
+          }
+          return;
+        }
+
+        if (pref === 'followers') {
+          try {
+            const followId = `${profile.uid}_${receiverUid}`;
+            const snap = await getDoc(doc(db, 'follows', followId));
+            const ok = snap.exists() && (snap.data() as any)?.status === 'approved';
+            if (!cancelled) {
+              setCanMessageReceiver(ok);
+              setCannotMessageReason(ok ? null : t('chatCannotMessageFollowers'));
+            }
+            return;
+          } catch {
+            if (!cancelled) {
+              setCanMessageReceiver(false);
+              setCannotMessageReason(t('chatCannotMessageFollowers'));
+            }
+          }
+        }
+      };
+
+      run();
+      return () => {
+        cancelled = true;
+      };
+    }, [profile?.uid, receiver?.uid, receiver?.privacyMessagesFrom, receiverUid, t]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -6481,6 +7130,10 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
       showToast(t('readOnlyMode'), 'info');
       return;
     }
+    if (!canMessageReceiver) {
+      showToast(cannotMessageReason || t('chatCannotMessageNoOne'), 'info');
+      return;
+    }
 
     const messageData: any = {
       senderUid: profile.uid,
@@ -6503,13 +7156,17 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     setTypingState(false);
   };
 
-   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-     const file = e.target.files?.[0];
-     if (!file || !profile) return;
-     if (readOnly) {
-       showToast(t('readOnlyMode'), 'info');
-       return;
-     }
+	   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+	     const file = e.target.files?.[0];
+	     if (!file || !profile) return;
+	     if (readOnly) {
+	       showToast(t('readOnlyMode'), 'info');
+	       return;
+	     }
+	     if (!canMessageReceiver) {
+	       showToast(cannotMessageReason || t('chatCannotMessageNoOne'), 'info');
+	       return;
+	     }
 
      // Validate file type
      if (!file.type.startsWith('image/')) {
@@ -6604,6 +7261,10 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
       showToast(t('readOnlyMode'), 'info');
       return;
     }
+    if (!canMessageReceiver) {
+      showToast(cannotMessageReason || t('chatCannotMessageNoOne'), 'info');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recorderStreamRef.current = stream;
@@ -6638,12 +7299,16 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           return;
         }
 
-        try {
-          setAudioUploading(true);
-          setAudioProgress(0);
-          const ext = mime.includes('ogg') ? 'ogg' : 'webm';
-          const path = `chats/${profile.uid}/${receiverUid}/audio_${Date.now()}.${ext}`;
-          const url = await uploadBlobToStorage(path, blob, setAudioProgress);
+	        try {
+	          if (!canMessageReceiver) {
+	            showToast(cannotMessageReason || t('chatCannotMessageNoOne'), 'info');
+	            return;
+	          }
+	          setAudioUploading(true);
+	          setAudioProgress(0);
+	          const ext = mime.includes('ogg') ? 'ogg' : 'webm';
+	          const path = `chats/${profile.uid}/${receiverUid}/audio_${Date.now()}.${ext}`;
+	          const url = await uploadBlobToStorage(path, blob, setAudioProgress);
           await addDoc(collection(db, 'messages'), {
             senderUid: profile.uid,
             receiverUid,
@@ -6720,13 +7385,21 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
     document.getElementById(`msg-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
-  const sendImageMessage = async (url: string) => {
-    if (!profile) return;
-    await addDoc(collection(db, 'messages'), {
-      senderUid: profile.uid,
-      receiverUid,
-      text: '',
-      imageUrl: url,
+	  const sendImageMessage = async (url: string) => {
+	    if (!profile) return;
+	    if (readOnly) {
+	      showToast(t('readOnlyMode'), 'info');
+	      return;
+	    }
+	    if (!canMessageReceiver) {
+	      showToast(cannotMessageReason || t('chatCannotMessageNoOne'), 'info');
+	      return;
+	    }
+	    await addDoc(collection(db, 'messages'), {
+	      senderUid: profile.uid,
+	      receiverUid,
+	      text: '',
+	      imageUrl: url,
       createdAt: serverTimestamp(),
       read: false
     });
@@ -6825,7 +7498,18 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             <div className="flex items-center gap-3">
               <img src={receiver.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
               <div>
-                <div className="font-bold text-sm">{receiver.displayName}</div>
+	                <div className="font-bold text-sm inline-flex items-center gap-1">
+	                  <span>{receiver.displayName}</span>
+	                  <AccountStatusBadges
+	                    verified={receiver.verified}
+	                    requiresReview={receiver.requiresReview}
+	                    accountStatus={receiver.accountStatus}
+	                    verifiedTitle={t('verified')}
+	                    reviewTitle={t('accountUnderReview')}
+	                    restrictedTitle={t('accountRestricted')}
+	                    blockedTitle={t('accountBlocked')}
+	                  />
+	                </div>
                 {receiverHandle && (
                   <div className="text-[10px] text-gray-400">{receiverHandle}</div>
                 )}
@@ -7322,6 +8006,12 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
         )}
       </div>
 
+      {cannotMessageReason && !canMessageReceiver && (
+        <div className="px-4 py-2 border-t dark:border-zinc-800 bg-amber-50 dark:bg-amber-900/10 text-amber-900 dark:text-amber-200 text-xs font-bold">
+          {cannotMessageReason}
+        </div>
+      )}
+
       <form onSubmit={handleSend} className="p-4 bg-white dark:bg-black border-t dark:border-zinc-800">
         {replyTo && (
           <div className="mb-2 px-2">
@@ -7393,23 +8083,27 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             </div>
           </div>
         )}
-        <div className="flex gap-2 bg-gray-100 dark:bg-zinc-900 rounded-2xl p-2 items-center shadow-inner">
-          <label className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors cursor-pointer">
-            <Plus size={20} />
-            <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={uploading} />
-          </label>
-          <button
-            type="button"
-            onClick={() => {
-              setShowMediaPicker(true);
-            }}
-            disabled={uploading || audioUploading || isRecording}
-            className={cn(
-              "p-2 rounded-xl transition-colors text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200/70 dark:hover:bg-zinc-800/70",
-              (uploading || audioUploading || isRecording) && "opacity-30"
-            )}
-            title={t('stickers')}
-          >
+	        <div className="flex gap-2 bg-gray-100 dark:bg-zinc-900 rounded-2xl p-2 items-center shadow-inner">
+	          <label className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors cursor-pointer">
+	            <Plus size={20} />
+	            <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={uploading || !canMessageReceiver} />
+	          </label>
+	          <button
+	            type="button"
+	            onClick={() => {
+	              if (!canMessageReceiver) {
+	                showToast(cannotMessageReason || t('chatCannotMessageNoOne'), 'info');
+	                return;
+	              }
+	              setShowMediaPicker(true);
+	            }}
+	            disabled={uploading || audioUploading || isRecording || !canMessageReceiver}
+	            className={cn(
+	              "p-2 rounded-xl transition-colors text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200/70 dark:hover:bg-zinc-800/70",
+	              (uploading || audioUploading || isRecording) && "opacity-30"
+	            )}
+	            title={t('stickers')}
+	          >
             <Sticker size={18} />
           </button>
           <button
@@ -7417,17 +8111,17 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
             onClick={() => {
               if (isRecording) stopRecording();
               else startRecording();
-            }}
-            disabled={audioUploading || uploading}
-            className={cn(
-              "p-2 rounded-xl transition-colors",
-              isRecording
-                ? "bg-red-500 text-white"
-                : "text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200/70 dark:hover:bg-zinc-800/70",
-              (audioUploading || uploading) && "opacity-30"
-            )}
-            title={isRecording ? t('stopRecording') : t('startRecording')}
-          >
+	            }}
+	            disabled={audioUploading || uploading || !canMessageReceiver}
+	            className={cn(
+	              "p-2 rounded-xl transition-colors",
+	              isRecording
+	                ? "bg-red-500 text-white"
+	                : "text-gray-400 hover:text-black dark:hover:text-white hover:bg-gray-200/70 dark:hover:bg-zinc-800/70",
+	              (audioUploading || uploading) && "opacity-30"
+	            )}
+	            title={isRecording ? t('stopRecording') : t('startRecording')}
+	          >
             {isRecording ? <Square size={18} /> : <Mic size={18} />}
           </button>
           <input
@@ -7443,18 +8137,18 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                 }
               }
             }}
-            placeholder={t('typeMessage')}
-            className="flex-1 bg-transparent border-none focus:outline-none text-sm px-2 placeholder:text-gray-400"
-            disabled={uploading || audioUploading || isRecording}
-          />
-          <button 
-            type="submit"
-            disabled={(!text.trim() && !uploading) || uploading || audioUploading || isRecording}
-            className="bg-black dark:bg-white text-white dark:text-black p-2 rounded-xl disabled:opacity-30 transition-all hover:scale-105 active:scale-95 shadow-md"
-          >
-            <Send size={18} />
-          </button>
-        </div>
+	            placeholder={t('typeMessage')}
+	            className="flex-1 bg-transparent border-none focus:outline-none text-sm px-2 placeholder:text-gray-400"
+	            disabled={uploading || audioUploading || isRecording || !canMessageReceiver}
+	          />
+	          <button 
+	            type="submit"
+	            disabled={(!text.trim() && !uploading) || uploading || audioUploading || isRecording || !canMessageReceiver}
+	            className="bg-black dark:bg-white text-white dark:text-black p-2 rounded-xl disabled:opacity-30 transition-all hover:scale-105 active:scale-95 shadow-md"
+	          >
+	            <Send size={18} />
+	          </button>
+	        </div>
       </form>
 
       <AnimatePresence>
@@ -7736,22 +8430,25 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
       const photoURL = avatarUrl.trim() || user.photoURL || profile?.photoURL || '';
       const headerURL = bannerUrl.trim() || profile?.headerURL || '';
       const userDocRef = doc(db, 'users', user.uid);
-      await setDoc(userDocRef, {
-        uid: user.uid,
-        username: normalized,
-        usernameLower,
-        displayName: displayName.trim(),
-        email: user.email || '',
-        photoURL,
-        headerURL,
-        bio: profile?.bio || '',
-        city: profile?.city || '',
-        birthdate: profile?.birthdate || '',
-        hideEmail: profile?.hideEmail ?? false,
-        createdAt: profile?.createdAt || serverTimestamp(),
-        isOnline: true,
-        lastSeen: serverTimestamp()
-      }, { merge: true });
+	      await setDoc(userDocRef, {
+	        uid: user.uid,
+	        username: normalized,
+	        usernameLower,
+	        displayName: displayName.trim(),
+	        email: user.email || '',
+	        photoURL,
+	        headerURL,
+	        bio: profile?.bio || '',
+	        city: profile?.city || '',
+	        birthdate: profile?.birthdate || '',
+	        hideEmail: profile?.hideEmail ?? false,
+	        isPrivate: profile?.isPrivate ?? false,
+	        privacyMessagesFrom: profile?.privacyMessagesFrom || 'everyone',
+	        privacyCommentsFrom: profile?.privacyCommentsFrom || 'everyone',
+	        createdAt: profile?.createdAt || serverTimestamp(),
+	        isOnline: true,
+	        lastSeen: serverTimestamp()
+	      }, { merge: true });
       showToast(t('welcomeMessage'), 'success');
       setShowDone(true);
       setTimeout(() => onComplete(), 1600);
@@ -8415,11 +9112,13 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 	    const q = query(
 	      collection(db, 'notifications'), 
 	      where('toUid', '==', profile.uid),
-	      orderBy('createdAt', 'desc'),
 	      limit(50)
 	    );
 	    const unsubscribe = safeOnSnapshot(q, (s: any) => {
-	      const snapshotNotifications = s.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification));
+	      let snapshotNotifications = s.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification));
+        if (profile?.mutedUsers?.length) {
+          snapshotNotifications = snapshotNotifications.filter(n => !profile.mutedUsers?.includes(n.fromUid));
+        }
 	      lastNotificationSnapshotRef.current = snapshotNotifications;
 	      const hidden = hiddenNotificationIdsRef.current;
 	      setNotifications(snapshotNotifications.filter(n => !hidden[n.id]));
@@ -8615,7 +9314,7 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
   );
 }
 
-function SocialApp({ isOffline, offlineQueue }: { isOffline: boolean; offlineQueue: QueuedAction[] }) {
+	function SocialApp({ isOffline, offlineQueue }: { isOffline: boolean; offlineQueue: QueuedAction[] }) {
   const { user, loading, profile, logout, needsOnboarding } = useAuth();
   const { darkMode, setDarkMode, t } = useSettings();
   const { showToast } = useToast();
@@ -8633,7 +9332,29 @@ function SocialApp({ isOffline, offlineQueue }: { isOffline: boolean; offlineQue
   const [showWelcomeBack, setShowWelcomeBack] = useState(false);
   const [maintenanceNewsId, setMaintenanceNewsId] = useState<string | null>(null);
   const [maintenanceRemainingMs, setMaintenanceRemainingMs] = useState<number | null>(null);
-  const [disablingMaintenance, setDisablingMaintenance] = useState(false);
+	  const accountStatus = profile?.accountStatus || 'active';
+	  const accountRequiresReview = profile?.requiresReview === true;
+		  const [disablingMaintenance, setDisablingMaintenance] = useState(false);
+		  const seenPostViewsRef = useRef(new Set<string>());
+
+	  const recordPostView = async (postId: string) => {
+	    if (!user || !postId) return;
+	    const key = `${user.uid}:${postId}`;
+	    if (seenPostViewsRef.current.has(key)) return;
+	    seenPostViewsRef.current.add(key);
+
+	    try {
+	      const lsKey = `zimo_viewed_${key}`;
+	      const now = Date.now();
+	      const last = Number(localStorage.getItem(lsKey) || '0');
+	      if (!Number.isNaN(last) && now - last < 1000 * 60 * 60 * 12) return; // 12h
+	      localStorage.setItem(lsKey, String(now));
+	    } catch {}
+
+	    try {
+	      await updateDoc(doc(db, 'posts', postId), { views: increment(1) });
+	    } catch {}
+	  };
 
   useEffect(() => {
     setShowOnboarding(needsOnboarding);
@@ -8816,10 +9537,11 @@ function SocialApp({ isOffline, offlineQueue }: { isOffline: boolean; offlineQue
     return <OnboardingWizard onComplete={() => setShowOnboarding(false)} />;
   }
 
-  const handleOpenPost = (post: Post) => {
-    setSelectedPost(post);
-    setView('post_detail');
-  };
+	  const handleOpenPost = (post: Post) => {
+	    recordPostView(post.id);
+	    setSelectedPost(post);
+	    setView('post_detail');
+	  };
 
   const handleOpenProfile = (uid: string) => {
     if (uid === profile?.uid) {
@@ -8830,19 +9552,20 @@ function SocialApp({ isOffline, offlineQueue }: { isOffline: boolean; offlineQue
     }
   };
 
-  const handleOpenPostId = async (postId: string) => {
-    try {
-      const snap = await getDoc(doc(db, 'posts', postId));
-      if (!snap.exists()) {
-        showToast(t('noPostFound'), 'info');
-        return;
-      }
-      setSelectedPost({ id: snap.id, ...(snap.data() as any) } as Post);
-      setView('post_detail');
-    } catch {
-      showToast(t('genericError'), 'error');
-    }
-  };
+	  const handleOpenPostId = async (postId: string) => {
+	    try {
+	      const snap = await getDoc(doc(db, 'posts', postId));
+	      if (!snap.exists()) {
+	        showToast(t('noPostFound'), 'info');
+	        return;
+	      }
+	      recordPostView(snap.id);
+	      setSelectedPost({ id: snap.id, ...(snap.data() as any) } as Post);
+	      setView('post_detail');
+	    } catch {
+	      showToast(t('genericError'), 'error');
+	    }
+	  };
 
   const handleHashtagClick = (tag: string) => {
     setActiveHashtag(tag);
@@ -8960,7 +9683,37 @@ function SocialApp({ isOffline, offlineQueue }: { isOffline: boolean; offlineQue
         </div>
       )}
 
-      {readOnly && !maintenance && (
+      {accountStatus === 'blocked' && !maintenance && (
+        <div className={cn(
+          "fixed left-0 right-0 z-[110] bg-red-600 text-white py-2 px-4 flex items-center justify-center gap-2 shadow-md",
+          isOffline ? "top-10" : "top-0"
+        )}>
+          <Shield size={18} />
+          <span className="text-sm font-bold">{t('blockedCannotWrite')}</span>
+        </div>
+      )}
+
+      {accountStatus === 'restricted' && !maintenance && (
+        <div className={cn(
+          "fixed left-0 right-0 z-[110] bg-amber-500 text-black py-2 px-4 flex items-center justify-center gap-2 shadow-md",
+          isOffline ? "top-10" : "top-0"
+        )}>
+          <Info size={18} />
+          <span className="text-sm font-bold">{t('restrictedCannotWrite')}</span>
+        </div>
+      )}
+
+      {accountRequiresReview && accountStatus === 'active' && !maintenance && (
+        <div className={cn(
+          "fixed left-0 right-0 z-[110] bg-amber-500 text-black py-2 px-4 flex items-center justify-center gap-2 shadow-md",
+          isOffline ? "top-10" : "top-0"
+        )}>
+          <Info size={18} />
+          <span className="text-sm font-bold">{t('accountUnderReview')}</span>
+        </div>
+      )}
+
+      {readOnly && accountStatus === 'active' && !maintenance && (
         <div className={cn(
           "fixed left-0 right-0 z-[110] bg-blue-600 text-white py-2 px-4 flex items-center justify-center gap-2 shadow-md",
           isOffline ? "top-10" : "top-0"
@@ -8983,17 +9736,19 @@ function SocialApp({ isOffline, offlineQueue }: { isOffline: boolean; offlineQue
       
       <main className={cn(isChatView ? "pt-0 pb-0" : "pb-24 pt-6 md:pt-16", isOffline && "pt-10")}>
         <AnimatePresence mode="wait">
-          {view === 'feed' && (
-            <Feed 
-              key="feed"
-              onOpenPost={handleOpenPost} 
-              onOpenProfile={handleOpenProfile} 
-              searchHashtag={activeHashtag}
-              onClearHashtag={() => setActiveHashtag(null)}
-              onOpenImage={handleOpenImage}
-              onShowLikes={setLikesPostId}
-            />
-          )}
+	          {view === 'feed' && (
+	            <Feed 
+	              key="feed"
+	              onOpenPost={handleOpenPost} 
+	              onOpenProfile={handleOpenProfile} 
+	              searchHashtag={activeHashtag}
+	              onClearHashtag={() => setActiveHashtag(null)}
+	              onOpenImage={handleOpenImage}
+	              onShowLikes={setLikesPostId}
+	              onGoExplore={() => setView('explore')}
+	              onGoProfile={() => setView('profile')}
+	            />
+	          )}
           {view === 'explore' && (
             <Explore 
               key="explore"
@@ -9176,6 +9931,12 @@ function AdminPanel({
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingReports, setLoadingReports] = useState(true);
+  const [moderationReason, setModerationReason] = useState('');
+  const [moderationNote, setModerationNote] = useState('');
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [userFilter, setUserFilter] = useState<'all' | 'review' | 'restricted' | 'blocked'>('all');
+  const [userSearch, setUserSearch] = useState('');
 
   useEffect(() => {
     setCfgMaintenance(maintenance);
@@ -9204,7 +9965,7 @@ function AdminPanel({
 
   useEffect(() => {
     if (!isAdmin) return;
-    const qAnn = query(collection(db, 'announcements'), orderBy('createdAt', 'desc'), limit(50));
+    const qAnn = query(collection(db, 'announcements'), limit(50));
     const unsub = safeOnSnapshot(
       qAnn,
       (snap: any) => {
@@ -9217,9 +9978,24 @@ function AdminPanel({
     return unsub;
   }, [isAdmin]);
 
+  useEffect(() => {
+    if (!isAdmin) return;
+    const qUsers = query(collection(db, 'users'), limit(300));
+    const unsub = safeOnSnapshot(
+      qUsers,
+      (snap: any) => {
+        const items = snap.docs.map((d: any) => d.data() as UserProfile);
+        setUsers(items);
+        setUsersLoading(false);
+      },
+      'Не удалось загрузить пользователей (admin):'
+    );
+    return unsub;
+  }, [isAdmin]);
+
 	  useEffect(() => {
 	    if (!isAdmin) return;
-	    const qReq = query(collection(db, 'verificationRequests'), orderBy('createdAt', 'desc'), limit(50));
+	    const qReq = query(collection(db, 'verificationRequests'), limit(50));
 	    const unsub = safeOnSnapshot(
 	      qReq,
 	      (snap: any) => {
@@ -9233,7 +10009,7 @@ function AdminPanel({
 
 	  useEffect(() => {
 	    if (!isAdmin) return;
-	    const qRep = query(collection(db, 'reports'), orderBy('createdAt', 'desc'), limit(50));
+	    const qRep = query(collection(db, 'reports'), limit(50));
 	    const unsub = safeOnSnapshot(
 	      qRep,
 	      (snap: any) => {
@@ -9483,11 +10259,50 @@ function AdminPanel({
         return;
       }
       setQuickUser(res.docs[0].data() as UserProfile);
+      const u = res.docs[0].data() as UserProfile;
+      setModerationReason(u.blockedReason || '');
+      setModerationNote(u.reviewNote || '');
     } catch (e) {
       console.error('Failed to load user:', e);
       showToast(t('genericError'), 'error');
     } finally {
       setQuickLoading(false);
+    }
+  };
+
+  const openQuickUser = (uid: string) => {
+    setQuickUid(uid);
+    // Let state update before query runs
+    setTimeout(() => {
+      void loadQuickUser();
+    }, 0);
+  };
+
+  const setUserModeration = async (
+    uid: string,
+    patch: Partial<Pick<UserProfile, 'accountStatus' | 'blockedReason' | 'requiresReview' | 'reviewNote'>>
+  ) => {
+    if (!isAdmin) return;
+    try {
+      const updates: any = { ...patch };
+      if (patch.accountStatus === 'blocked') {
+        updates.blockedAt = serverTimestamp();
+        updates.blockedReason = String(patch.blockedReason || moderationReason || '').trim();
+      }
+      if (patch.accountStatus === 'active') {
+        updates.accountStatus = 'active';
+        updates.blockedAt = deleteField();
+        updates.blockedReason = deleteField();
+      }
+      if (patch.reviewNote !== undefined) {
+        updates.reviewNote = String(patch.reviewNote || '').trim();
+      }
+      await updateDoc(doc(db, 'users', uid), updates);
+      setQuickUser((prev) => (prev && prev.uid === uid ? { ...prev, ...updates } : prev));
+      showToast(t('save'), 'success');
+    } catch (e) {
+      console.error('Failed to set moderation fields:', e);
+      showToast(t('genericError'), 'error');
     }
   };
 
@@ -9556,10 +10371,18 @@ function AdminPanel({
           <div className="mt-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="font-bold text-sm truncate inline-flex items-center gap-1">
-                  <span>{quickUser.displayName}</span>
-                  {quickUser.verified ? <VerifiedBadge title={t('verified')} /> : null}
-                </div>
+	                <div className="font-bold text-sm truncate inline-flex items-center gap-1">
+	                  <span>{quickUser.displayName}</span>
+	                  <AccountStatusBadges
+	                    verified={quickUser.verified}
+	                    requiresReview={quickUser.requiresReview}
+	                    accountStatus={quickUser.accountStatus}
+	                    verifiedTitle={t('verified')}
+	                    reviewTitle={t('accountUnderReview')}
+	                    restrictedTitle={t('accountRestricted')}
+	                    blockedTitle={t('accountBlocked')}
+	                  />
+	                </div>
                 <div className="text-[10px] text-gray-400 truncate">{quickUser.uid}</div>
                 {formatUsername(quickUser.username) ? (
                   <div className="text-[11px] text-gray-500 mt-1">{formatUsername(quickUser.username)}</div>
@@ -9589,6 +10412,178 @@ function AdminPanel({
                 {t('removeVerify')}
               </button>
             </div>
+
+            <div className="mt-4 rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-2">{t('adminSetStatus')}</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setUserModeration(quickUser.uid, { accountStatus: 'active' })}
+                  className="px-3 py-1.5 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  {t('adminActivate')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserModeration(quickUser.uid, { accountStatus: 'restricted' })}
+                  className="px-3 py-1.5 rounded-full text-xs font-bold border border-amber-200 dark:border-amber-900/40 text-amber-700 dark:text-amber-200 hover:bg-amber-50 dark:hover:bg-amber-900/10 transition-colors"
+                >
+                  {t('adminRestrict')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserModeration(quickUser.uid, { accountStatus: 'blocked', blockedReason: moderationReason })}
+                  className="px-3 py-1.5 rounded-full text-xs font-bold border border-red-200 dark:border-red-900/40 text-red-700 dark:text-red-200 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors"
+                >
+                  {t('adminBlock')}
+                </button>
+              </div>
+
+              <div className="mt-3">
+                <label className="text-[10px] text-gray-400 uppercase tracking-widest">{t('moderationReason')}</label>
+                <input
+                  value={moderationReason}
+                  onChange={(e) => setModerationReason(e.target.value)}
+                  className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                  placeholder={t('moderationReason')}
+                />
+              </div>
+
+              <div className="mt-3">
+                <label className="text-[10px] text-gray-400 uppercase tracking-widest">{t('moderationNote')}</label>
+                <textarea
+                  value={moderationNote}
+                  onChange={(e) => setModerationNote(e.target.value)}
+                  rows={2}
+                  className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+                  placeholder={t('moderationNote')}
+                />
+              </div>
+
+              <div className="flex gap-2 mt-3">
+                <button
+                  type="button"
+                  onClick={() => setUserModeration(quickUser.uid, { requiresReview: true, reviewNote: moderationNote })}
+                  className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  {t('adminReviewFlag')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserModeration(quickUser.uid, { requiresReview: false, reviewNote: '' })}
+                  className="flex-1 py-2 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                >
+                  {t('adminClearReview')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
+        <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('adminUsers')}</div>
+
+        <div className="flex flex-wrap gap-2 mb-3">
+          {(['all', 'review', 'restricted', 'blocked'] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setUserFilter(f)}
+              className={cn(
+                "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+                userFilter === f
+                  ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+                  : "border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+              )}
+            >
+              {f === 'all'
+                ? t('filterAll')
+                : f === 'review'
+                  ? t('filterReview')
+                  : f === 'restricted'
+                    ? t('filterRestricted')
+                    : t('filterBlocked')}
+            </button>
+          ))}
+        </div>
+
+        <input
+          value={userSearch}
+          onChange={(e) => setUserSearch(e.target.value)}
+          placeholder={t('searchByNameUid')}
+          className="w-full bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none mb-3"
+        />
+
+        {usersLoading ? (
+          <div className="text-xs text-gray-400">{t('loading')}</div>
+        ) : (
+          <div className="space-y-2 max-h-[420px] overflow-auto pr-1">
+            {users
+              .filter((u) => {
+                if (userFilter === 'review') return u.requiresReview === true;
+                if (userFilter === 'restricted') return u.accountStatus === 'restricted';
+                if (userFilter === 'blocked') return u.accountStatus === 'blocked';
+                return true;
+              })
+              .filter((u) => {
+                const q = userSearch.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  (u.uid || '').toLowerCase().includes(q) ||
+                  (u.displayName || '').toLowerCase().includes(q) ||
+                  (u.username || '').toLowerCase().includes(q)
+                );
+              })
+              .slice(0, 60)
+              .map((u) => (
+               <button
+                 key={u.uid}
+                 type="button"
+                 onClick={() => openQuickUser(u.uid)}
+                 className="w-full text-left rounded-2xl border border-gray-100 dark:border-zinc-800 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800/40 transition-colors"
+               >
+                 <div className="flex items-start justify-between gap-3">
+                   <div className="min-w-0">
+                     <div className="font-bold text-sm truncate inline-flex items-center gap-2">
+                       <span>{u.displayName || u.uid}</span>
+                       {u.requiresReview ? (
+                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-900/40">
+                           {t('filterReview')}
+                         </span>
+                       ) : null}
+                       {u.accountStatus === 'restricted' ? (
+                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-900/40">
+                           {t('filterRestricted')}
+                         </span>
+                       ) : null}
+                       {u.accountStatus === 'blocked' ? (
+                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-900/40">
+                           {t('filterBlocked')}
+                         </span>
+                       ) : null}
+                     </div>
+                     <div className="text-[10px] text-gray-400 truncate">{u.uid}</div>
+                     {u.reviewNote ? (
+                       <div className="text-[11px] text-gray-500 mt-1 line-clamp-2">
+                         {u.reviewNote}
+                       </div>
+                     ) : null}
+                   </div>
+                    <div className="flex flex-col gap-2 items-end">
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenProfile(u.uid);
+                        }}
+                        className="px-3 py-1.5 rounded-full text-xs font-bold border border-gray-200 dark:border-zinc-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                      >
+                         {t('openProfile')}
+                       </div>
+                     </div>
+                  </div>
+                </button>
+              ))}
           </div>
         )}
       </div>
@@ -10024,6 +11019,9 @@ function AppShell() {
   const [configError, setConfigError] = useState<string | null>(null);
   const [maintenance, setMaintenance] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
+  const accountStatus = profile?.accountStatus || 'active';
+  const accountReadOnly = accountStatus === 'blocked' || accountStatus === 'restricted';
+  const effectiveReadOnly = readOnly || accountReadOnly;
   const [maintenanceMessage, setMaintenanceMessage] = useState('');
   const [maintenanceEndsAt, setMaintenanceEndsAt] = useState<Timestamp | null>(null);
   const [legacyAnnouncement, setLegacyAnnouncement] = useState<AppAnnouncement | null>(null);
@@ -10201,7 +11199,7 @@ function AppShell() {
   }, []);
 
   const syncOfflineQueue = useCallback(async () => {
-    if (isOffline || offlineQueue.length === 0 || !profile) return;
+    if (isOffline || offlineQueue.length === 0 || !profile || accountReadOnly) return;
 
     const actionsToSync = [...offlineQueue];
     const successIds: string[] = [];
@@ -10232,10 +11230,10 @@ function AppShell() {
     if (successIds.length > 0) {
       setOfflineQueue(prev => prev.filter(action => !successIds.includes(action.id)));
     }
-  }, [isOffline, offlineQueue, profile]);
+  }, [isOffline, offlineQueue, profile, accountReadOnly]);
 
   return (
-    <AppConfigContext.Provider value={{ configLoaded, maintenance, readOnly, maintenanceMessage, maintenanceEndsAt, legacyAnnouncement, isAdmin, configError, pendingMaintenanceDisable }}>
+    <AppConfigContext.Provider value={{ configLoaded, maintenance, readOnly: effectiveReadOnly, maintenanceMessage, maintenanceEndsAt, legacyAnnouncement, isAdmin, configError, pendingMaintenanceDisable }}>
       <ToastProvider>
         <VerificationNotificationProvider>
           {/* Connection indicator - slides out when offline */}
@@ -10322,6 +11320,6 @@ class ErrorBoundary extends Component<{ children: ReactNode; fallback?: ReactNod
       );
     }
 
-    return this.props.children;
-  }
-}
+	    return this.props.children;
+	  }
+		}

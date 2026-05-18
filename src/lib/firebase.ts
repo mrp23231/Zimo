@@ -28,7 +28,7 @@ const dbId = firebaseConfig.firestoreDatabaseId === '(default)' ? undefined : fi
 // Auto-detect long polling and disable fetch streams as a compatibility fallback.
 export const db = initializeFirestore(
   app,
-  { experimentalAutoDetectLongPolling: true, useFetchStreams: false } as any,
+  { experimentalForceLongPolling: true, useFetchStreams: false } as any,
   dbId
 );
 export const auth = getAuth(app);
