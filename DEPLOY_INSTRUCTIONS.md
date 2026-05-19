@@ -35,6 +35,24 @@ firebase use zimo-554fd
 firebase deploy --only firestore:rules,firestore:indexes --project zimo-554fd
 ```
 
+### 4.1. (Опционально) Firebase Storage (если включаете `VITE_STORAGE_ENABLED=true`)
+```bash
+firebase deploy --only storage --project zimo-554fd
+```
+
+### 4.2. (Опционально) Настроить CORS для Firebase Storage (для загрузки файлов с домена Render)
+Если в браузере видите ошибку вида:
+`Upload blocked by CORS` / `Response to preflight request doesn't pass access control check`,
+нужно применить CORS к bucket’у.
+
+1) Установить `gsutil` (Google Cloud SDK), если ещё не установлен
+2) Применить CORS конфиг из репозитория:
+```bash
+gsutil cors set storage.cors.json gs://zimo-554fd.appspot.com
+```
+
+Если у вас другой домен продакшена — добавьте его в `storage.cors.json` и повторите команду.
+
 ### 5. Подождать построения индексов
 Индексы строятся 1-2 минуты. Можно отслеживать в Firebase Console:
 https://console.firebase.google.com/v1/r/project/zimo-554fd/firestore/indexes

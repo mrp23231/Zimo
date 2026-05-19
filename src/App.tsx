@@ -1427,18 +1427,18 @@ const translations = {
 
 type TranslationKey = keyof typeof translations.en;
 
-// Storage is strongly recommended (media as data URLs bloats Firestore and quickly hits limits).
-// Storage is opt-in for local dev (avoid CORS/tooling pitfalls), opt-out via env for prod.
-// - Dev default: disabled (stores images inline as dataURL)
-// - Prod default: enabled
-// Override explicitly with `VITE_STORAGE_ENABLED=true|false`.
+// This app can optionally use Firebase Storage for media.
+// If Storage is disabled, images are stored inline in Firestore as data URLs (cheaper, but limited).
+// Enable explicitly with `VITE_STORAGE_ENABLED=true`.
 const STORAGE_ENABLED = (() => {
   const v = import.meta.env.VITE_STORAGE_ENABLED;
   if (v === 'true') return true;
-  if (v === 'false') return false;
-  return import.meta.env.DEV ? false : true;
+  return false;
 })();
 const MAX_IMAGE_BYTES = 700 * 1024;
+// Firestore document size limit is ~1MiB; data URLs add base64 overhead + other fields.
+// Keep a separate cap for the encoded string size to avoid hitting Firestore limits.
+const MAX_IMAGE_DATAURL_CHARS = 900 * 1024;
 const MAX_IMAGE_DIM = 1280;
 const MAX_GIF_BYTES = 6 * 1024 * 1024;
 const MAX_CONCURRENT_UPLOADS = 3;
@@ -4336,7 +4336,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           // Regular image with compression
           const { dataUrl, bytes } = await readAndCompressImage(task.file);
           fallbackUrl = dataUrl;
-          if (bytes > MAX_IMAGE_BYTES) {
+          if (bytes > MAX_IMAGE_BYTES || dataUrl.length > MAX_IMAGE_DATAURL_CHARS) {
             throw new Error('image_too_large_after_compression');
           }
           
@@ -5164,7 +5164,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
     try {
       const { dataUrl, bytes } = await readAndCompressImage(file);
-      if (bytes > MAX_IMAGE_BYTES) {
+      if (bytes > MAX_IMAGE_BYTES || dataUrl.length > MAX_IMAGE_DATAURL_CHARS) {
         setError(t('imageTooLarge'));
         return;
       }
@@ -5207,7 +5207,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
     try {
       const { dataUrl, bytes } = await readAndCompressImage(file);
-      if (bytes > MAX_IMAGE_BYTES) {
+      if (bytes > MAX_IMAGE_BYTES || dataUrl.length > MAX_IMAGE_DATAURL_CHARS) {
         setError(t('imageTooLarge'));
         return;
       }
@@ -7177,7 +7177,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
      if (!STORAGE_ENABLED) {
        try {
          const { dataUrl, bytes } = await readAndCompressImage(file);
-         if (bytes > MAX_IMAGE_BYTES) {
+         if (bytes > MAX_IMAGE_BYTES || dataUrl.length > MAX_IMAGE_DATAURL_CHARS) {
            showToast(t('imageTooLarge'), 'error');
            return;
          }
@@ -7202,7 +7202,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
      try {
        // Compress image before upload
        const { dataUrl, bytes } = await readAndCompressImage(file);
-       if (bytes > MAX_IMAGE_BYTES) {
+       if (bytes > MAX_IMAGE_BYTES || dataUrl.length > MAX_IMAGE_DATAURL_CHARS) {
          showToast(t('imageTooLarge'), 'error');
          setUploading(false);
          return;
@@ -8460,7 +8460,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const handleAvatarFile = async (file: File) => {
     try {
       const { dataUrl, bytes } = await readAndCompressImage(file);
-      if (bytes > MAX_IMAGE_BYTES) {
+      if (bytes > MAX_IMAGE_BYTES || dataUrl.length > MAX_IMAGE_DATAURL_CHARS) {
         setError(t('imageTooLarge'));
         return;
       }
@@ -8474,7 +8474,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const handleBannerFile = async (file: File) => {
     try {
       const { dataUrl, bytes } = await readAndCompressImage(file);
-      if (bytes > MAX_IMAGE_BYTES) {
+      if (bytes > MAX_IMAGE_BYTES || dataUrl.length > MAX_IMAGE_DATAURL_CHARS) {
         setError(t('imageTooLarge'));
         return;
       }
