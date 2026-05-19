@@ -35,7 +35,8 @@ import {
   deleteDoc,
   getDocs,
   increment,
-  deleteField
+  deleteField,
+  runTransaction
 } from './lib/firebase';
 import { 
   ref, 
@@ -344,6 +345,61 @@ const mergeUniqueUsers = (users: UserProfile[]) =>
 
 const normalizeSearchText = (value: string) => normalizeUsername(value).trim().toLowerCase();
 
+type SocialKey = 'telegram' | 'tiktok' | 'instagram' | 'youtube' | 'x' | 'website';
+type SocialLinks = Partial<Record<SocialKey, string>>;
+
+const SOCIAL_KEYS: SocialKey[] = ['telegram', 'tiktok', 'instagram', 'youtube', 'x', 'website'];
+
+const isSafeHttpUrl = (value: string) => {
+  try {
+    const u = new URL(value);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+const normalizeSocialLink = (key: SocialKey, raw: string) => {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+
+  // Allow direct safe URLs
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    return isSafeHttpUrl(value) ? value : '';
+  }
+
+  const v = value.startsWith('@') ? value.slice(1) : value;
+  const handle = v.replace(/\s+/g, '');
+  const isHandle = /^[a-zA-Z0-9_.]{2,32}$/.test(handle);
+  const isLongHandle = /^[a-zA-Z0-9_.-]{2,64}$/.test(handle);
+
+  switch (key) {
+    case 'telegram':
+      return isHandle ? `https://t.me/${handle}` : '';
+    case 'instagram':
+      return isHandle ? `https://www.instagram.com/${handle}` : '';
+    case 'tiktok':
+      return isLongHandle ? `https://www.tiktok.com/@${handle}` : '';
+    case 'x':
+      return isHandle ? `https://x.com/${handle}` : '';
+    case 'youtube':
+      if (value.startsWith('@')) return isLongHandle ? `https://www.youtube.com/@${handle}` : '';
+      if (/^([a-zA-Z0-9-]+\.)?youtube\.com\//.test(value) || /^youtu\.be\//.test(value)) {
+        const withProto = `https://${value}`;
+        return isSafeHttpUrl(withProto) ? withProto : '';
+      }
+      return '';
+    case 'website':
+      if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(\/.*)?$/.test(value)) {
+        const withProto = `https://${value}`;
+        return isSafeHttpUrl(withProto) ? withProto : '';
+      }
+      return '';
+    default:
+      return '';
+  }
+};
+
 const VerifiedBadge = ({ title, className, animate }: { title: string; className?: string; animate?: boolean }) => (
   <motion.span
     className={cn("inline-flex items-center align-middle", className)}
@@ -494,12 +550,21 @@ const collectCommentBranchIds = (comments: Comment[], rootId: string) => {
   bio?: string;
   birthdate?: string;
   city?: string;
-  hideEmail?: boolean;
-  verified?: boolean;
-  verifiedAt?: Timestamp;
-  typing?: boolean;
-  typingTo?: string;
-  typingAt?: Timestamp;
+	  hideEmail?: boolean;
+	  verified?: boolean;
+	  verifiedAt?: Timestamp;
+	  socialVisibility?: 'public' | 'followers' | 'private';
+	  socialLinks?: {
+	    telegram?: string;
+	    tiktok?: string;
+	    instagram?: string;
+	    youtube?: string;
+	    x?: string;
+	    website?: string;
+	  };
+	  typing?: boolean;
+	  typingTo?: string;
+	  typingAt?: Timestamp;
   createdAt: Timestamp;
   followersCount?: number;
   followingCount?: number;
@@ -536,6 +601,11 @@ interface Follow {
   createdAt: Timestamp;
 }
 
+interface PollOption {
+  text: string;
+  votes: number;
+}
+
 	interface Post {
 	  id: string;
 	  authorUid: string;
@@ -554,6 +624,10 @@ interface Follow {
 	  views?: number;
 	  repostId?: string;
 	  repostCount?: number;
+	  hasPoll?: boolean;
+	  pollOptions?: PollOption[];
+	  pollAllowRevote?: boolean;
+	  pollEndsAt?: Timestamp;
 	}
 
 interface CommentNode extends Comment {
@@ -750,6 +824,28 @@ const translations = {
      tooManyFiles: 'Too many files. Maximum 10 images allowed.',
      fileTooLarge: 'File is too large. Maximum 20MB allowed.',
      previewFailed: 'Failed to generate preview',
+     pollOptionRequired: 'At least 2 options required',
+     pollOptionTooMany: 'Maximum 6 options',
+     pollVoteFailed: 'Could not vote. Try again.',
+	    pollVotesLabel: '{count} votes',
+      socialLinksTitle: 'Links',
+      socialLinksHint: 'Add your other social profiles. You can control who sees them.',
+      socialVisibility: 'Links visibility',
+      socialVisibilityPublic: 'Public',
+      socialVisibilityFollowers: 'Followers',
+      socialVisibilityPrivate: 'Only me',
+      socialInvalidUrl: 'Invalid link for {field}',
+      social_telegram: 'Telegram',
+      social_tiktok: 'TikTok',
+      social_instagram: 'Instagram',
+      social_youtube: 'YouTube',
+      social_x: 'X',
+      social_website: 'Website',
+      socialPlaceholderHandle: 'username or https:// link',
+      socialPlaceholderWebsite: 'example.com or https://example.com',
+      profileCardTitle: 'Business card',
+      profileCardEmpty: 'No links added yet',
+      openLink: 'Open',
      add: 'Add',
      post: 'Post',
      uploading: 'Uploading...',
@@ -1153,6 +1249,28 @@ const translations = {
      tooManyFiles: 'Слишком много файлов. Максимум 10 изображений.',
      fileTooLarge: 'Файл слишком большой. Максимум 20МБ.',
      previewFailed: 'Не удалось создать превью',
+     pollOptionRequired: 'Нужно минимум 2 варианта',
+     pollOptionTooMany: 'Максимум 6 вариантов',
+     pollVoteFailed: 'Не удалось проголосовать. Попробуйте ещё раз.',
+     pollVotesLabel: '{count} голосов',
+     socialLinksTitle: 'Ссылки',
+     socialLinksHint: 'Добавь свои соцсети. Можно выбрать, кто будет их видеть.',
+     socialVisibility: 'Видимость ссылок',
+     socialVisibilityPublic: 'Публично',
+     socialVisibilityFollowers: 'Подписчикам',
+     socialVisibilityPrivate: 'Только мне',
+     socialInvalidUrl: 'Некорректная ссылка для {field}',
+     social_telegram: 'Telegram',
+     social_tiktok: 'TikTok',
+     social_instagram: 'Instagram',
+     social_youtube: 'YouTube',
+     social_x: 'X',
+     social_website: 'Сайт',
+     socialPlaceholderHandle: 'ник или https:// ссылка',
+     socialPlaceholderWebsite: 'example.com или https://example.com',
+     profileCardTitle: 'Визитка',
+     profileCardEmpty: 'Ссылок пока нет',
+     openLink: 'Открыть',
      add: 'Добавить',
     post: 'Опубликовать',
     uploading: 'Загрузка...',
@@ -2367,6 +2485,12 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
       if (profile?.mutedUsers?.length) {
         allPosts = allPosts.filter(p => !profile.mutedUsers?.includes(p.authorUid));
       }
+      // Back-compat: treat missing `visibility` as public.
+      allPosts = allPosts.filter(p => {
+        const v = (p as any)?.visibility;
+        const effectiveVisibility = typeof v === 'string' ? v : 'public';
+        return effectiveVisibility === 'public' || p.authorUid === profile.uid;
+      });
       allPosts.sort((a, b) => (Number((b as any).likes || 0) - Number((a as any).likes || 0)));
       setTrendingPosts(allPosts.slice(0, 10));
       setLoading(false);
@@ -2374,11 +2498,7 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 
     const unsubscribers: Array<() => void> = [];
 
-    const qPublic = query(
-      collection(db, 'posts'),
-      where('visibility', '==', 'public'),
-      limit(200)
-    );
+    const qPublic = query(collection(db, 'posts'), limit(200));
     unsubscribers.push(
       safeOnSnapshot(qPublic, (s: any) => {
         s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
@@ -2417,6 +2537,12 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
       if (profile?.mutedUsers?.length) {
         allPosts = allPosts.filter(post => !profile.mutedUsers?.includes(post.authorUid));
       }
+      // Back-compat: treat missing `visibility` as public.
+      allPosts = allPosts.filter(p => {
+        const v = (p as any)?.visibility;
+        const effectiveVisibility = typeof v === 'string' ? v : 'public';
+        return effectiveVisibility === 'public' || p.authorUid === profile.uid;
+      });
       allPosts.sort((a, b) => {
         const aMs = (a.createdAt && typeof (a.createdAt as any).toMillis === 'function') ? (a.createdAt as any).toMillis() : 0;
         const bMs = (b.createdAt && typeof (b.createdAt as any).toMillis === 'function') ? (b.createdAt as any).toMillis() : 0;
@@ -2427,11 +2553,7 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
 
     const unsubscribers: Array<() => void> = [];
 
-    const qPublic = query(
-      collection(db, 'posts'),
-      where('visibility', '==', 'public'),
-      limit(Math.max(200, SEARCH_POST_LIMIT * 4))
-    );
+    const qPublic = query(collection(db, 'posts'), limit(Math.max(200, SEARCH_POST_LIMIT * 4)));
     unsubscribers.push(
       safeOnSnapshot(qPublic, (s: any) => {
         s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
@@ -2527,7 +2649,7 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
                 }}
                 className="w-full flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
               >
-                <img src={u.photoURL} loading="lazy" className="w-9 h-9 rounded-full object-cover" referrerPolicy="no-referrer" />
+                <img src={u.photoURL || undefined} loading="lazy" className="w-9 h-9 rounded-full object-cover" referrerPolicy="no-referrer" />
                 <div className="min-w-0">
 	                  <div className="text-sm font-bold truncate inline-flex items-center gap-1">
 	                    <span>{u.displayName}</span>
@@ -3030,7 +3152,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isA
                     }}
                     className="w-full flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
                   >
-                    <img src={u.photoURL} loading="lazy" className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
+                    <img src={u.photoURL || undefined} loading="lazy" className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="min-w-0">
 	                    <div className="text-sm font-bold truncate inline-flex items-center gap-1">
 	                      <span>{u.displayName}</span>
@@ -3153,6 +3275,15 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   const commentTree = buildCommentTree(comments);
   const commentDescendantCountById = useMemo(() => buildCommentDescendantCountMap(commentTree), [commentTree]);
   const [collapsedCommentBranches, setCollapsedCommentBranches] = useState<Record<string, boolean>>({});
+  const pollOptions = post.pollOptions || [];
+  const pollTotalVotes = pollOptions.reduce((sum, opt) => sum + (Number(opt?.votes) || 0), 0);
+  const [myPollVote, setMyPollVote] = useState<number | null>(null);
+  const [pollBusy, setPollBusy] = useState(false);
+  const pollEndsAtMs =
+    post.pollEndsAt && typeof (post.pollEndsAt as any)?.toMillis === 'function'
+      ? (post.pollEndsAt as any).toMillis()
+      : null;
+  const pollClosed = typeof pollEndsAtMs === 'number' ? pollEndsAtMs <= Date.now() : false;
 
   const handleCarouselScroll = () => {
     const el = carouselRef.current;
@@ -3211,6 +3342,85 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     };
     fetchReposted();
   }, [post.repostId]);
+
+  useEffect(() => {
+    if (!profile?.uid || !post.hasPoll) {
+      setMyPollVote(null);
+      return;
+    }
+    const voteRef = doc(db, 'posts', post.id, 'pollVotes', profile.uid);
+    const unsub = safeOnSnapshot<any>(
+      voteRef,
+      (snap) => {
+        if (!snap.exists()) {
+          setMyPollVote(null);
+          return;
+        }
+        const data = snap.data() as any;
+        const idx = typeof data?.optionIndex === 'number' ? data.optionIndex : null;
+        setMyPollVote(Number.isFinite(idx) ? idx : null);
+      },
+      'Не удалось загрузить голос пользователя:'
+    );
+    return unsub;
+  }, [profile?.uid, post.id, post.hasPoll]);
+
+  const handlePollVote = async (e: React.MouseEvent, optionIndex: number) => {
+    e.stopPropagation();
+    if (!profile) return;
+    if (readOnly) {
+      showToast(t('readOnlyMode'), 'info');
+      return;
+    }
+    if (!post.hasPoll || pollOptions.length < 2) return;
+    if (optionIndex < 0 || optionIndex >= pollOptions.length) return;
+    if (pollBusy) return;
+    if (pollClosed) return;
+
+    setPollBusy(true);
+    try {
+      const postRef = doc(db, 'posts', post.id);
+      const voteRef = doc(db, 'posts', post.id, 'pollVotes', profile.uid);
+
+      await runTransaction(db as any, async (tx) => {
+        const [postSnap, voteSnap] = await Promise.all([tx.get(postRef as any), tx.get(voteRef as any)]);
+        if (!postSnap.exists()) return;
+        const data = postSnap.data() as any;
+        const options: PollOption[] = Array.isArray(data?.pollOptions) ? data.pollOptions : [];
+        if (options.length < 2 || optionIndex >= options.length) return;
+        const allowRevote: boolean = data?.pollAllowRevote !== false;
+        const endsAt = data?.pollEndsAt;
+        const endsAtMs = endsAt && typeof endsAt?.toMillis === 'function' ? endsAt.toMillis() : null;
+        if (typeof endsAtMs === 'number' && endsAtMs <= Date.now()) return;
+
+        const prevIdx = voteSnap.exists() ? (voteSnap.data() as any)?.optionIndex : null;
+        const prevIndex = typeof prevIdx === 'number' ? prevIdx : null;
+
+        if (voteSnap.exists() && !allowRevote) return;
+
+        // No-op if voting same option again
+        if (prevIndex === optionIndex) return;
+
+        const nextOptions = options.map((o) => ({
+          text: String(o?.text || ''),
+          votes: Number(o?.votes) || 0,
+        }));
+
+        if (prevIndex !== null && prevIndex >= 0 && prevIndex < nextOptions.length) {
+          nextOptions[prevIndex] = { ...nextOptions[prevIndex], votes: Math.max(0, (nextOptions[prevIndex].votes || 0) - 1) };
+        }
+        nextOptions[optionIndex] = { ...nextOptions[optionIndex], votes: (nextOptions[optionIndex].votes || 0) + 1 };
+
+        tx.update(postRef as any, { pollOptions: nextOptions });
+        tx.set(voteRef as any, { optionIndex, createdAt: serverTimestamp() }, { merge: true });
+      });
+    } catch (err) {
+      console.error('Poll vote error:', err);
+      showToast(t('pollVoteFailed'), 'error');
+    } finally {
+      setPollBusy(false);
+    }
+  };
 
   const handleLike = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -3713,6 +3923,52 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           <img src={post.imageUrl} loading="lazy" className="w-full h-auto max-h-[400px] object-cover hover:scale-105 transition-transform duration-500" referrerPolicy="no-referrer" />
         </div>
       )}
+
+      {post.hasPoll && pollOptions.length >= 2 && (
+        <div className="mb-4 rounded-2xl border dark:border-zinc-800 bg-gray-50/70 dark:bg-zinc-800/30 p-3">
+          <div className="space-y-2">
+            {pollOptions.map((opt, idx) => {
+              const votes = Number(opt?.votes) || 0;
+              const pct = pollTotalVotes > 0 ? Math.round((votes / pollTotalVotes) * 100) : 0;
+              const selected = myPollVote === idx;
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={(e) => handlePollVote(e, idx)}
+                  disabled={!profile || pollBusy || pollClosed}
+                  className={cn(
+                    "w-full text-left rounded-xl px-3 py-2 border dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/40 hover:bg-white dark:hover:bg-zinc-900 transition-colors relative overflow-hidden",
+                    selected ? "border-blue-500/60" : "border-gray-100 dark:border-zinc-800",
+                    (pollBusy || pollClosed) ? "opacity-70 cursor-not-allowed" : ""
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "absolute inset-y-0 left-0 z-0",
+                      selected ? "bg-blue-500/15" : "bg-black/5 dark:bg-white/5"
+                    )}
+                    style={{ width: `${pct}%` }}
+                  />
+                  <div className="relative z-10 flex items-center justify-between gap-3">
+                    <div className="text-sm text-gray-800 dark:text-gray-100 font-medium">
+                      {opt?.text || ''}
+                    </div>
+                    <div className={cn("text-xs font-bold tabular-nums", selected ? "text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-gray-400")}>
+                      {pct}%
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+            {t('pollVotesLabel').replace('{count}', String(pollTotalVotes))}
+            {pollClosed ? ' · закрыто' : ''}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between text-gray-400 border-t dark:border-zinc-800 pt-4">
         <div className="flex items-center gap-6">
           <button 
@@ -3910,9 +4166,11 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
    const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
    const [error, setError] = useState<string | null>(null);
    const [listHeight, setListHeight] = useState(600);
-   const [showPollOptions, setShowPollOptions] = useState(false);
+  const [showPollOptions, setShowPollOptions] = useState(false);
 		   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
 		   const [pollError, setPollError] = useState<string | null>(null);
+  const [pollAllowRevote, setPollAllowRevote] = useState(true);
+  const [pollDurationHours, setPollDurationHours] = useState<number | null>(null);
 		   const listContainerRef = useRef<HTMLDivElement>(null);
 		   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 		   const focusComposer = () => {
@@ -4027,7 +4285,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
      useEffect(() => {
        if (!profile) return;
        // If the user is blocked or restricted, do not attempt to fetch posts.
-       if (profile.accountStatus && (profile.accountStatus === 'blocked' || profile.accountStatus === 'restricted')) {
+       if (profile.accountStatus && profile.accountStatus === 'blocked') {
          setPosts([]);
          setHasMorePosts(false);
          return;
@@ -4053,6 +4311,16 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       if (searchHashtag) {
         const q = searchHashtag.toLowerCase();
         all = all.filter(p => (p.content || '').toLowerCase().includes(q));
+      }
+
+      // Back-compat: older posts may not have `visibility`. Treat missing as "public".
+      // Global tab should show only public posts + your own posts.
+      if (feedTab === 'global') {
+        all = all.filter(p => {
+          const v = (p as any)?.visibility;
+          const effectiveVisibility = typeof v === 'string' ? v : 'public';
+          return effectiveVisibility === 'public' || p.authorUid === profile.uid;
+        });
       }
 
       all.sort((a, b) => {
@@ -4107,12 +4375,9 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     unsubscribers.push(safeOnSnapshot(ownQuery, (snapshot) => mergeDocs(snapshot.docs), 'Не удалось загрузить свои посты:'));
 
     if (feedTab === 'global') {
-      const publicQuery = query(
-        collection(db, 'posts'),
-        where('visibility', '==', 'public'),
-        limit(fetchLimit)
-      );
-      unsubscribers.push(safeOnSnapshot(publicQuery, (snapshot) => mergeDocs(snapshot.docs), 'Не удалось загрузить публичные посты:'));
+      // Query all posts; filter by visibility client-side to include back-compat docs without `visibility`.
+      const allPostsQuery = query(collection(db, 'posts'), limit(fetchLimit));
+      unsubscribers.push(safeOnSnapshot(allPostsQuery, (snapshot) => mergeDocs(snapshot.docs), 'Не удалось загрузить посты (global):'));
     } else {
       const authors = Array.from(new Set([profile.uid, ...followingUids])).filter(Boolean);
       const authorChunks = chunkItems(authors, 30);
@@ -4152,7 +4417,11 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
     if (showPollOptions) {
       const validOptions = pollOptions.filter(opt => opt.trim() !== '');
       if (validOptions.length < 2) {
-        setPollError('At least 2 options required');
+        setPollError(t('pollOptionRequired'));
+        return;
+      }
+      if (validOptions.length > 6) {
+        setPollError(t('pollOptionTooMany'));
         return;
       }
     }
@@ -4181,12 +4450,14 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       if (showPollOptions) {
         const validOptions = pollOptions.filter(opt => opt.trim() !== '');
         postData.hasPoll = true;
-        postData.pollOptions = validOptions.map(opt => ({
+        postData.pollOptions = validOptions.slice(0, 6).map(opt => ({
           text: opt.trim(),
           votes: 0,
-          voters: [] as string[]
         }));
-        postData.pollVotes = {}; // For real-time updates: {uid: optionIndex}
+        postData.pollAllowRevote = pollAllowRevote;
+        if (pollDurationHours && pollDurationHours > 0) {
+          postData.pollEndsAt = Timestamp.fromDate(new Date(Date.now() + pollDurationHours * 60 * 60 * 1000));
+        }
       }
 
       const postRef = await addDoc(collection(db, 'posts'), postData);
@@ -4226,6 +4497,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       setShowPollOptions(false);
       setPollOptions(['', '']);
       setPollError(null);
+      setPollAllowRevote(true);
+      setPollDurationHours(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'posts');
       setError(t('postFailed').replace('{error}', t('genericError')));
@@ -4754,11 +5027,51 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                   <span className="text-xs font-bold text-gray-500 dark:text-gray-400">Poll options</span>
                   <button
                     type="button"
-                    onClick={() => setPollOptions([...pollOptions, ''])}
-                    className="text-xs text-blue-500 hover:text-blue-600 font-medium"
+                    onClick={() => {
+                      const nonEmptyCount = pollOptions.filter(o => o.trim() !== '').length;
+                      if (nonEmptyCount >= 6) {
+                        setPollError(t('pollOptionTooMany'));
+                        return;
+                      }
+                      setPollOptions([...pollOptions, '']);
+                    }}
+                    className={cn(
+                      "text-xs font-medium",
+                      pollOptions.filter(o => o.trim() !== '').length >= 6
+                        ? "text-gray-300 cursor-not-allowed"
+                        : "text-blue-500 hover:text-blue-600"
+                    )}
+                    disabled={pollOptions.filter(o => o.trim() !== '').length >= 6}
                   >
                     + Add option
                   </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 px-1">
+                  <label className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={pollAllowRevote}
+                      onChange={(e) => setPollAllowRevote(e.target.checked)}
+                      className="accent-blue-600"
+                    />
+                    Можно переголосовать
+                  </label>
+                  <label className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                    <span className="text-gray-500 dark:text-gray-400">Закрыть через:</span>
+                    <select
+                      value={pollDurationHours === null ? 'never' : String(pollDurationHours)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setPollDurationHours(v === 'never' ? null : Number(v));
+                      }}
+                      className="bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-700 rounded-full px-3 py-1 text-[11px] focus:outline-none"
+                    >
+                      <option value="never">никогда</option>
+                      <option value="1">1 час</option>
+                      <option value="24">24 часа</option>
+                      <option value="168">7 дней</option>
+                    </select>
+                  </label>
                 </div>
                 {pollOptions.map((option, idx) => (
                   <div key={idx} className="flex items-center gap-2">
@@ -4952,6 +5265,15 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [editIsPrivate, setEditIsPrivate] = useState(false);
   const [editPrivacyMessagesFrom, setEditPrivacyMessagesFrom] = useState<UserProfile['privacyMessagesFrom']>('everyone');
   const [editPrivacyCommentsFrom, setEditPrivacyCommentsFrom] = useState<UserProfile['privacyCommentsFrom']>('everyone');
+  const [editSocialVisibility, setEditSocialVisibility] = useState<UserProfile['socialVisibility']>('public');
+  const [editSocialLinks, setEditSocialLinks] = useState<Record<SocialKey, string>>(() => ({
+    telegram: '',
+    tiktok: '',
+    instagram: '',
+    youtube: '',
+    x: '',
+    website: '',
+  }));
   const [savingProfile, setSavingProfile] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushPrefs, setPushPrefs] = useState(() => ({
@@ -4964,6 +5286,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [isFollowing, setIsFollowing] = useState(false);
   const [followRequested, setFollowRequested] = useState(false);
   const [postAlertsEnabled, setPostAlertsEnabled] = useState(false);
+  const [showSocialLinksModal, setShowSocialLinksModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarProgress, setAvatarProgress] = useState(0);
@@ -5116,24 +5439,33 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     return unsub;
   }, [effectiveUid, isOwnProfile, isFollowing]);
 
-  useEffect(() => {
-    if (!isOwnProfile || !targetProfile) return;
-    setEditName(targetProfile.displayName || '');
-	    setEditBio(targetProfile.bio || '');
-	    setEditCity(targetProfile.city || '');
-	    setEditBirthdate(targetProfile.birthdate || '');
-	    setEditHideEmail(!!targetProfile.hideEmail);
-	    setEditIsPrivate(!!targetProfile.isPrivate);
-	    setEditPrivacyMessagesFrom(targetProfile.privacyMessagesFrom || 'everyone');
-	    setEditPrivacyCommentsFrom(targetProfile.privacyCommentsFrom || 'everyone');
-	    setPushEnabled(!!targetProfile.pushEnabled);
-	    setPushPrefs({
-	      likes: targetProfile.pushPrefs?.likes ?? true,
-	      comments: targetProfile.pushPrefs?.comments ?? true,
-      follows: targetProfile.pushPrefs?.follows ?? true,
-      messages: targetProfile.pushPrefs?.messages ?? true,
-    });
-  }, [isOwnProfile, targetProfile?.uid]);
+	  useEffect(() => {
+	    if (!isOwnProfile || !targetProfile) return;
+	    setEditName(targetProfile.displayName || '');
+		    setEditBio(targetProfile.bio || '');
+		    setEditCity(targetProfile.city || '');
+		    setEditBirthdate(targetProfile.birthdate || '');
+		    setEditHideEmail(!!targetProfile.hideEmail);
+		    setEditIsPrivate(!!targetProfile.isPrivate);
+		    setEditPrivacyMessagesFrom(targetProfile.privacyMessagesFrom || 'everyone');
+		    setEditPrivacyCommentsFrom(targetProfile.privacyCommentsFrom || 'everyone');
+		    setEditSocialVisibility(targetProfile.socialVisibility || 'public');
+		    setEditSocialLinks({
+		      telegram: targetProfile.socialLinks?.telegram || '',
+		      tiktok: targetProfile.socialLinks?.tiktok || '',
+		      instagram: targetProfile.socialLinks?.instagram || '',
+		      youtube: targetProfile.socialLinks?.youtube || '',
+		      x: targetProfile.socialLinks?.x || '',
+		      website: targetProfile.socialLinks?.website || '',
+		    });
+		    setPushEnabled(!!targetProfile.pushEnabled);
+		    setPushPrefs({
+		      likes: targetProfile.pushPrefs?.likes ?? true,
+		      comments: targetProfile.pushPrefs?.comments ?? true,
+	      follows: targetProfile.pushPrefs?.follows ?? true,
+	      messages: targetProfile.pushPrefs?.messages ?? true,
+	    });
+	  }, [isOwnProfile, targetProfile?.uid]);
 
   const handleUpdateBio = async () => {
     if (!currentProfile) return;
@@ -5238,19 +5570,40 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     }
   };
 
-  const handleSaveProfile = async () => {
-    if (!currentProfile) return;
-    if (readOnly) {
-      showToast(t('readOnlyMode'), 'info');
-      return;
+	  const handleSaveProfile = async () => {
+	    if (!currentProfile) return;
+	    if (readOnly) {
+	      showToast(t('readOnlyMode'), 'info');
+	      return;
     }
     if (!editName.trim()) {
       setError(t('namePlaceholder'));
       return;
-    }
-    setSavingProfile(true);
-    try {
-	      const updates = {
+	    }
+	    setSavingProfile(true);
+	    try {
+	      const normalizedSocialLinks: Partial<SocialLinks> = {};
+	      const socialLinkFieldUpdates: Record<string, any> = {};
+	      for (const k of SOCIAL_KEYS) {
+	        const raw = String(editSocialLinks?.[k] || '').trim();
+	        if (!raw) {
+	          socialLinkFieldUpdates[`socialLinks.${k}`] = deleteField();
+	          continue;
+	        }
+	        const normalized = normalizeSocialLink(k, raw);
+	        if (!normalized) {
+	          showToast(t('socialInvalidUrl').replace('{field}', t(`social_${k}`)), 'error');
+	          setSavingProfile(false);
+	          return;
+	        }
+	        normalizedSocialLinks[k] = normalized;
+	        socialLinkFieldUpdates[`socialLinks.${k}`] = normalized;
+	      }
+
+	      const socialVisibility: UserProfile['socialVisibility'] =
+	        editSocialVisibility === 'followers' || editSocialVisibility === 'private' ? editSocialVisibility : 'public';
+
+	      const updates: Record<string, any> = {
 	        displayName: editName.trim(),
 	        bio: editBio.trim(),
 	        city: editCity.trim(),
@@ -5258,14 +5611,31 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 	        hideEmail: editHideEmail,
 	        isPrivate: editIsPrivate,
 	        privacyMessagesFrom: editPrivacyMessagesFrom || 'everyone',
-	        privacyCommentsFrom: editPrivacyCommentsFrom || 'everyone'
+	        privacyCommentsFrom: editPrivacyCommentsFrom || 'everyone',
+	        socialVisibility,
+	        ...socialLinkFieldUpdates,
 	      };
-      await updateDoc(doc(db, 'users', currentProfile.uid), updates);
-      setTargetProfile(prev => prev ? { ...prev, ...updates } : null);
-      setNewBio(editBio.trim());
-      if (currentProfile.displayName !== editName.trim()) {
-        await syncAuthorPosts({ authorName: editName.trim() });
-      }
+	      await updateDoc(doc(db, 'users', currentProfile.uid), updates);
+	      setTargetProfile(prev => {
+	        if (!prev) return null;
+	        return {
+	          ...prev,
+	          displayName: updates.displayName,
+	          bio: updates.bio,
+	          city: updates.city,
+	          birthdate: updates.birthdate,
+	          hideEmail: updates.hideEmail,
+	          isPrivate: updates.isPrivate,
+	          privacyMessagesFrom: updates.privacyMessagesFrom,
+	          privacyCommentsFrom: updates.privacyCommentsFrom,
+	          socialVisibility,
+	          socialLinks: normalizedSocialLinks,
+	        };
+	      });
+	      setNewBio(editBio.trim());
+	      if (currentProfile.displayName !== editName.trim()) {
+	        await syncAuthorPosts({ authorName: editName.trim() });
+	      }
       showToast(t('profileSaved'), 'success');
     } catch (err) {
       showToast(t('genericError'), 'error');
@@ -5482,12 +5852,18 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     birthdateLabel,
     targetProfile.city?.trim() || ''
   ].filter(Boolean);
-  const usernameDisplay = formatUsername(targetProfile.username);
-  const emailDisplay = getEmailDisplay(targetProfile, currentProfile?.uid, t);
-  const pinnedPosts = (targetProfile.pinnedPostIds || [])
-    .map(id => userPosts.find(post => post.id === id))
-    .filter((post): post is Post => Boolean(post));
-  const regularPosts = userPosts.filter(post => !targetProfile.pinnedPostIds?.includes(post.id));
+	  const usernameDisplay = formatUsername(targetProfile.username);
+	  const emailDisplay = getEmailDisplay(targetProfile, currentProfile?.uid, t);
+	  const socialVisibility = targetProfile.socialVisibility || 'public';
+	  const canShowSocialLinks =
+	    isOwnProfile || socialVisibility === 'public' || (socialVisibility === 'followers' && isFollowing);
+	  const socialLinkEntries = (Object.entries(targetProfile.socialLinks || {}) as Array<[string, any]>)
+	    .filter(([, v]) => typeof v === 'string' && v.trim().length > 0)
+	    .map(([k, v]) => [k as SocialKey, String(v)] as const);
+	  const pinnedPosts = (targetProfile.pinnedPostIds || [])
+	    .map(id => userPosts.find(post => post.id === id))
+	    .filter((post): post is Post => Boolean(post));
+	  const regularPosts = userPosts.filter(post => !targetProfile.pinnedPostIds?.includes(post.id));
 
   const handleTogglePinnedPost = async (post: Post) => {
     if (!currentProfile || currentProfile.uid !== post.authorUid) return;
@@ -5626,15 +6002,55 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 	        {emailDisplay && (
           <p className="text-[11px] text-gray-400 mt-1">{emailDisplay}</p>
         )}
-	        {profileMetaParts.length > 0 && (
-	          <p className="text-[11px] text-gray-400 mt-2">
-	            {profileMetaParts.join(' · ')}
-	          </p>
-	        )}
+		        {profileMetaParts.length > 0 && (
+		          <p className="text-[11px] text-gray-400 mt-2">
+		            {profileMetaParts.join(' · ')}
+		          </p>
+		        )}
 
-          {(targetProfile.requiresReview ||
-            targetProfile.accountStatus === 'restricted' ||
-            targetProfile.accountStatus === 'blocked') && (
+        {canShowSocialLinks && socialLinkEntries.length > 0 && (
+          <>
+            <div className="mt-3 cursor-pointer text-[12px] font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100" onClick={() => setShowSocialLinksModal(true)}>
+              {t('socialLinksTitle')}
+            </div>
+            
+            {/* Social Links Modal */}
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" 
+                 onClick={e => { if (e.target === e.currentTarget) setShowSocialLinksModal(false); }}
+                 style={{ display: showSocialLinksModal ? 'block' : 'none' }}>
+              <div className="bg-white dark:bg-zinc-900 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl">
+                <div className="p-4 border-b dark:border-zinc-800 flex justify-between items-center bg-gray-50/50 dark:bg-zinc-800/50">
+                  <h3 className="font-bold">{t('socialLinksTitle')}</h3>
+                  <button onClick={() => setShowSocialLinksModal(false)} 
+                          className="p-2 hover:bg-gray-200 dark:hover:bg-zinc-700 rounded-full transition-colors">
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="p-4">
+                  <div className="space-y-3">
+                    {socialLinkEntries.map(([key, url]) => (
+                      <a
+                        key={key}
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-3 px-4 py-2 rounded-full text-sm font-medium border transition-all duration-200 hover:bg-gray-50 dark:hover:bg-zinc-800"
+                        title={url}
+                      >
+                        <span>{t(`social_${key}`)}</span>
+                        <span className="text-[10px] font-normal text-gray-400">{t('openLink')}</span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+	          {(targetProfile.requiresReview ||
+	            targetProfile.accountStatus === 'restricted' ||
+	            targetProfile.accountStatus === 'blocked') && (
             <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
               {targetProfile.requiresReview ? (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-900/40">
@@ -5852,7 +6268,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   onClick={() => onOpenProfile?.(u.uid)}
                   className="flex items-center gap-3 hover:opacity-80 transition-opacity"
                 >
-                  <img src={u.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
+                  <img src={u.photoURL || undefined} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="text-left">
 	                    <div className="font-bold text-sm inline-flex items-center gap-1">
 	                      <span>{u.displayName}</span>
@@ -5891,7 +6307,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                   onClick={() => onOpenProfile?.(u.uid)}
                   className="flex items-center gap-3 hover:opacity-80 transition-opacity"
                 >
-                  <img src={u.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
+                  <img src={u.photoURL || undefined} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
                   <div className="text-left">
 	                    <div className="font-bold text-sm inline-flex items-center gap-1">
 	                      <span>{u.displayName}</span>
@@ -6059,9 +6475,9 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
-                    <div className="text-sm font-bold">{t('privacyCommentsFrom')}</div>
-                    <div className="mt-2 flex flex-wrap gap-2">
+	                  <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+	                    <div className="text-sm font-bold">{t('privacyCommentsFrom')}</div>
+	                    <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
                         onClick={() => setEditPrivacyCommentsFrom('everyone')}
@@ -6098,12 +6514,73 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                       >
                         {t('privacyNoOne')}
                       </button>
-                    </div>
-                  </div>
-                <button
-                  onClick={handleSaveProfile}
-                  disabled={savingProfile}
-                  className="w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-50"
+	                    </div>
+	                  </div>
+
+	                  <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 p-3">
+	                    <div className="text-sm font-bold">{t('socialLinksTitle')}</div>
+	                    <div className="text-[11px] text-gray-400 mt-1">{t('socialLinksHint')}</div>
+
+	                    <div className="mt-3">
+	                      <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('socialVisibility')}</div>
+	                      <div className="mt-2 flex flex-wrap gap-2">
+	                        <button
+	                          type="button"
+	                          onClick={() => setEditSocialVisibility('public')}
+	                          className={cn(
+	                            "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+	                            editSocialVisibility === 'public'
+	                              ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+	                              : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+	                          )}
+	                        >
+	                          {t('socialVisibilityPublic')}
+	                        </button>
+	                        <button
+	                          type="button"
+	                          onClick={() => setEditSocialVisibility('followers')}
+	                          className={cn(
+	                            "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+	                            editSocialVisibility === 'followers'
+	                              ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+	                              : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+	                          )}
+	                        >
+	                          {t('socialVisibilityFollowers')}
+	                        </button>
+	                        <button
+	                          type="button"
+	                          onClick={() => setEditSocialVisibility('private')}
+	                          className={cn(
+	                            "px-3 py-1.5 rounded-full text-xs font-bold border transition-colors",
+	                            editSocialVisibility === 'private'
+	                              ? "bg-black dark:bg-white text-white dark:text-black border-black dark:border-white"
+	                              : "border-gray-200 dark:border-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-800"
+	                          )}
+	                        >
+	                          {t('socialVisibilityPrivate')}
+	                        </button>
+	                      </div>
+	                    </div>
+
+	                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+	                      {SOCIAL_KEYS.map((k) => (
+	                        <div key={k}>
+	                          <label className="text-xs text-gray-400 uppercase tracking-widest">{t(`social_${k}`)}</label>
+	                          <input
+	                            value={editSocialLinks?.[k] || ''}
+	                            onChange={(e) => setEditSocialLinks(prev => ({ ...prev, [k]: e.target.value }))}
+	                            placeholder={k === 'website' ? t('socialPlaceholderWebsite') : t('socialPlaceholderHandle')}
+	                            className="w-full mt-2 bg-gray-50 dark:bg-zinc-800 p-3 rounded-2xl border dark:border-zinc-700 text-sm focus:outline-none"
+	                          />
+	                        </div>
+	                      ))}
+	                    </div>
+	                  </div>
+	                <button
+	                  onClick={handleSaveProfile}
+	                  disabled={savingProfile}
+	                  className="w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-50"
                 >
                   {savingProfile ? t('uploading') : t('save')}
                 </button>
@@ -7496,7 +7973,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
           </button>
           {receiver && (
             <div className="flex items-center gap-3">
-              <img src={receiver.photoURL} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
+              <img src={receiver.photoURL || undefined} loading="lazy" className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
               <div>
 	                <div className="font-bold text-sm inline-flex items-center gap-1">
 	                  <span>{receiver.displayName}</span>
@@ -7685,7 +8162,7 @@ function Chat({ receiverUid, onBack, onOpenImage }: { receiverUid: string, onBac
                 <div className="w-8 flex-shrink-0">
                   {showAvatar && (
                     <img
-                      src={isMe ? profile?.photoURL : receiver?.photoURL}
+                      src={(isMe ? profile?.photoURL : receiver?.photoURL) || undefined}
                       className="w-8 h-8 rounded-full object-cover"
                       referrerPolicy="no-referrer"
                     />
@@ -8359,6 +8836,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const [bannerUrl, setBannerUrl] = useState(profile?.headerURL || '');
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [usernameStatus, setUsernameStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle');
 
   if (!user) return null;
 
@@ -8375,9 +8853,11 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
     const value = normalized.toLowerCase();
     if (!/^[a-z0-9_]{3,20}$/.test(value)) {
       setError(t('usernameHint'));
+      setUsernameStatus('invalid');
       return false;
     }
     setChecking(true);
+    setUsernameStatus('checking');
     try {
       const q = query(collection(db, 'users'), where('usernameLower', '==', value), limit(1));
       const qLegacy = query(collection(db, 'users'), where('usernameLower', '==', `@${value}`), limit(1));
@@ -8387,17 +8867,54 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
         (!snapLegacy.empty && snapLegacy.docs[0].id !== user.uid);
       if (taken) {
         setError(t('usernameTaken'));
+        setUsernameStatus('taken');
         return false;
       }
       setError(null);
+      setUsernameStatus('available');
       return true;
     } catch (err) {
       setError(t('genericError'));
+      setUsernameStatus('idle');
       return false;
     } finally {
       setChecking(false);
     }
   };
+
+  const usernameSuggestion = useMemo(() => {
+    const base =
+      (displayName || user.displayName || user.email || '')
+        .toLowerCase()
+        .replace(/@.+$/, '')
+        .replace(/[^a-z0-9_]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 20);
+    if (!base) return 'zimo_user';
+    if (base.length < 3) return (base + '_user').slice(0, 20);
+    return base;
+  }, [displayName, user.displayName, user.email]);
+
+  useEffect(() => {
+    if (step !== 1) return;
+    const normalized = normalizeUsername(username);
+    const value = normalized.toLowerCase();
+    if (!value) {
+      setUsernameStatus('idle');
+      return;
+    }
+    if (!/^[a-z0-9_]{3,20}$/.test(value)) {
+      setUsernameStatus('invalid');
+      return;
+    }
+    setUsernameStatus('checking');
+    const timer = window.setTimeout(() => {
+      void handleCheckUsername();
+    }, 450);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [username, step]);
 
   const handleNext = async () => {
     if (step === 1) {
@@ -8635,6 +9152,20 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
                 <div className="font-bold">{user.email}</div>
                 <div className="text-xs text-gray-400">{user.displayName || t('googleAccount')}</div>
               </div>
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/50 p-3">
+                  <div className="text-[10px] uppercase tracking-widest text-gray-400">Posts</div>
+                  <div className="text-xs font-bold text-gray-800 dark:text-gray-100 mt-1">Share ideas</div>
+                </div>
+                <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/50 p-3">
+                  <div className="text-[10px] uppercase tracking-widest text-gray-400">Chats</div>
+                  <div className="text-xs font-bold text-gray-800 dark:text-gray-100 mt-1">Stay close</div>
+                </div>
+                <div className="rounded-2xl border border-gray-100 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/50 p-3">
+                  <div className="text-[10px] uppercase tracking-widest text-gray-400">Privacy</div>
+                  <div className="text-xs font-bold text-gray-800 dark:text-gray-100 mt-1">Control</div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -8653,13 +9184,24 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
                   placeholder={t('usernamePlaceholder')}
                   className="flex-1 bg-transparent focus:outline-none"
                 />
+                {usernameStatus === 'checking' && <div className="ml-2 w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />}
+                {usernameStatus === 'available' && <Check className="ml-2 text-green-600" size={16} />}
+                {usernameStatus === 'taken' && <X className="ml-2 text-red-500" size={16} />}
               </div>
-              {checking && <div className="text-xs text-gray-400 mt-2">{t('checking')}</div>}
-              {!checking && error === t('usernameTaken') && (
-                <div className="text-xs text-red-500 mt-2">{t('usernameTaken')}</div>
-              )}
-              {!checking && !error && username.trim() && (
-                <div className="text-xs text-green-600 mt-2">{t('usernameAvailable')}</div>
+              {usernameStatus === 'invalid' && <div className="text-xs text-red-500 mt-2">{t('usernameHint')}</div>}
+              {usernameStatus === 'taken' && <div className="text-xs text-red-500 mt-2">{t('usernameTaken')}</div>}
+              {usernameStatus === 'available' && <div className="text-xs text-green-600 mt-2">{t('usernameAvailable')}</div>}
+              {(!username.trim() || usernameStatus === 'idle') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsername(usernameSuggestion);
+                    setError(null);
+                  }}
+                  className="mt-3 text-xs font-bold text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white underline decoration-gray-300 dark:decoration-zinc-700 underline-offset-4"
+                >
+                  Use suggestion: @{usernameSuggestion}
+                </button>
               )}
             </div>
           )}
@@ -8755,7 +9297,7 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               )}
               <button
                 onClick={handleNext}
-                disabled={checking}
+                disabled={checking || (step === 1 && usernameStatus !== 'available')}
                 className="flex-1 bg-black dark:bg-white text-white dark:text-black py-2 rounded-xl text-xs font-bold disabled:opacity-50"
               >
                 {step === totalSteps - 1 ? t('finish') : t('next')}
