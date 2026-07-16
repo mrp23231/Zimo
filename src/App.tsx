@@ -2778,13 +2778,16 @@ function WhoToFollow({ onOpenProfile }: { onOpenProfile: (uid: string) => void }
   );
 }
 
-function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isAdmin }: { 
-  currentView: View, 
+function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isAdmin, readingList, setReadingList, setSelectedPost }: {
+  currentView: View,
   setView: (v: View) => void,
   darkMode: boolean,
   setDarkMode: (d: boolean) => void,
   onSearchUser: (uid: string) => void,
-  isAdmin: boolean
+  isAdmin: boolean,
+  readingList?: SavedPost[],
+  setReadingList?: (posts: SavedPost[] | ((prev: SavedPost[]) => SavedPost[])) => void,
+  setSelectedPost?: (post: Post | ((prev: Post | null) => Post | null)) => void,
 }) {
   const { t, notificationsEnabled } = useSettings();
   const { logout, profile } = useAuth();
@@ -10636,13 +10639,16 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
       )}
 
       {!isChatView && (
-        <Navbar 
-          currentView={view} 
-          setView={setView} 
-          darkMode={darkMode} 
-          setDarkMode={setDarkMode} 
+        <Navbar
+          currentView={view}
+          setView={setView}
+          darkMode={darkMode}
+          setDarkMode={setDarkMode}
           onSearchUser={handleOpenProfile}
           isAdmin={isAdmin}
+          readingList={readingList}
+          setReadingList={setReadingList}
+          setSelectedPost={setSelectedPost}
         />
       )}
       
