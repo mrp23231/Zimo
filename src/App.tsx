@@ -90,10 +90,14 @@ import {
   Mic,
   Square,
   BarChart2,
+  BarChart3,
   BadgeCheck,
   Shield,
   History,
-  Clock
+  Clock,
+  Palette,
+  Trophy,
+  Cake
 } from 'lucide-react';
 import { GifPicker } from './components/GifPicker';
 import { VirtualPostList } from './components/VirtualPostList';
@@ -113,6 +117,13 @@ import { PostTemplates } from './components/PostTemplates';
 import { ContentFilters } from './components/ContentFilters';
 import { ReadingList } from './components/ReadingList';
 import { BookmarkFolders } from './components/BookmarkFolders';
+import { ProfileThemes } from './components/ProfileThemes';
+import { StatusMood } from './components/StatusMood';
+import { Leaderboard } from './components/Leaderboard';
+import { AudienceInsights } from './components/AudienceInsights';
+import { PhotoAlbums } from './components/PhotoAlbums';
+import { BirthdayReminders } from './components/BirthdayReminders';
+import { CommunityModeration } from './components/CommunityModeration';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
 
@@ -728,6 +739,22 @@ interface BookmarkFolder {
   color: string;
   postIds: string[];
   createdAt: number;
+}
+
+interface UserStatus {
+  text: string;
+  emoji: string;
+  expiresAt?: number;
+}
+
+interface PhotoAlbum {
+  id: string;
+  name: string;
+  description?: string;
+  coverImage?: string;
+  photos: string[];
+  createdAt: number;
+  updatedAt: number;
 }
 
 interface VerificationNotification {
@@ -2959,7 +2986,6 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isA
     { id: 'feed', icon: Home, label: t('feed') },
     { id: 'explore', icon: Compass, label: t('explore') },
     { id: 'notifications', icon: Bell, label: t('notifications'), badge: notificationsEnabled ? unreadCount : 0 },
-    { id: 'bookmarks', icon: Bookmark, label: t('bookmarks') },
     { id: 'messages', icon: MessageSquare, label: t('messages'), badge: unreadMessagesCount },
     { id: 'profile', icon: ProfileNavIcon, label: t('profile') },
   ];
@@ -5561,6 +5587,15 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [showVerifiedInfo, setShowVerifiedInfo] = useState(false);
   const [showVerifiedHow, setShowVerifiedHow] = useState(false);
   const [animateVerifiedBadge, setAnimateVerifiedBadge] = useState(false);
+  const [showProfileThemes, setShowProfileThemes] = useState(false);
+  const [showStatusMood, setShowStatusMood] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [leaderboardPeriod, setLeaderboardPeriod] = useState<'weekly' | 'monthly' | 'allTime'>('weekly');
+  const [showAudienceInsights, setShowAudienceInsights] = useState(false);
+  const [showPhotoAlbums, setShowPhotoAlbums] = useState(false);
+  const [photoAlbums, setPhotoAlbums] = useState<PhotoAlbum[]>([]);
+  const [showBirthdays, setShowBirthdays] = useState(false);
+  const [showCommunityModeration, setShowCommunityModeration] = useState(false);
 
   useEffect(() => {
     if (!targetProfile?.verified) return;
@@ -6465,6 +6500,63 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
               highlights={[]}
               onAdd={() => {}}
             />
+          </div>
+        )}
+
+        {/* New Features */}
+        {isOwnProfile && (
+          <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <button
+              onClick={() => setShowProfileThemes(true)}
+              className="flex items-center gap-2 p-3 rounded-2xl bg-gradient-to-br from-pink-500 to-violet-500 text-white hover:opacity-90 transition-opacity"
+            >
+              <Palette size={18} />
+              <span className="text-sm font-medium">Themes</span>
+            </button>
+            <button
+              onClick={() => setShowStatusMood(true)}
+              className="flex items-center gap-2 p-3 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-500 text-white hover:opacity-90 transition-opacity"
+            >
+              <Smile size={18} />
+              <span className="text-sm font-medium">Status</span>
+            </button>
+            <button
+              onClick={() => setShowLeaderboard(true)}
+              className="flex items-center gap-2 p-3 rounded-2xl bg-gradient-to-br from-yellow-500 to-orange-500 text-white hover:opacity-90 transition-opacity"
+            >
+              <Trophy size={18} />
+              <span className="text-sm font-medium">Leaderboard</span>
+            </button>
+            <button
+              onClick={() => setShowAudienceInsights(true)}
+              className="flex items-center gap-2 p-3 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white hover:opacity-90 transition-opacity"
+            >
+              <BarChart3 size={18} />
+              <span className="text-sm font-medium">Insights</span>
+            </button>
+            <button
+              onClick={() => setShowPhotoAlbums(true)}
+              className="flex items-center gap-2 p-3 rounded-2xl bg-gradient-to-br from-purple-500 to-pink-500 text-white hover:opacity-90 transition-opacity"
+            >
+              <ImageIcon size={18} />
+              <span className="text-sm font-medium">Albums</span>
+            </button>
+            <button
+              onClick={() => setShowBirthdays(true)}
+              className="flex items-center gap-2 p-3 rounded-2xl bg-gradient-to-br from-rose-500 to-pink-500 text-white hover:opacity-90 transition-opacity"
+            >
+              <Cake size={18} />
+              <span className="text-sm font-medium">Birthdays</span>
+            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setShowCommunityModeration(true)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-gradient-to-br from-red-500 to-orange-500 text-white hover:opacity-90 transition-opacity"
+              >
+                <Shield size={18} />
+                <span className="text-sm font-medium">Moderation</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -7474,6 +7566,65 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* New Feature Modals */}
+      <ProfileThemes
+        isOpen={showProfileThemes}
+        onClose={() => setShowProfileThemes(false)}
+        currentTheme={currentTheme}
+        onThemeChange={(theme) => setCurrentTheme(theme.id)}
+        userId={userId || profile?.uid || ''}
+        showToast={showToast}
+      />
+
+      <StatusMood
+        isOpen={showStatusMood}
+        onClose={() => setShowStatusMood(false)}
+        currentStatus={currentStatus || undefined}
+        onStatusChange={setCurrentStatus}
+        userId={userId || profile?.uid || ''}
+        showToast={showToast}
+      />
+
+      <Leaderboard
+        isOpen={showLeaderboard}
+        onClose={() => setShowLeaderboard(false)}
+        period={leaderboardPeriod}
+      />
+
+      <AudienceInsights
+        isOpen={showAudienceInsights}
+        onClose={() => setShowAudienceInsights(false)}
+        userId={userId || profile?.uid || ''}
+        userPosts={userPosts}
+      />
+
+      <PhotoAlbums
+        isOpen={showPhotoAlbums}
+        onClose={() => setShowPhotoAlbums(false)}
+        userId={userId || profile?.uid || ''}
+        albums={photoAlbums}
+        onAlbumsChange={setPhotoAlbums}
+        showToast={showToast}
+      />
+
+      <BirthdayReminders
+        isOpen={showBirthdays}
+        onClose={() => setShowBirthdays(false)}
+        userId={userId || profile?.uid || ''}
+        userBirthdate={targetProfile?.birthdate}
+        showToast={showToast}
+      />
+
+      {isAdmin && (
+        <CommunityModeration
+          isOpen={showCommunityModeration}
+          onClose={() => setShowCommunityModeration(false)}
+          userId={userId || profile?.uid || ''}
+          isAdmin={isAdmin}
+          showToast={showToast}
+        />
+      )}
     </div>
   );
 }
@@ -10292,6 +10443,17 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 		  const [postTemplates, setPostTemplates] = useState<PostTemplate[]>([]);
 		  const [bookmarkFolders, setBookmarkFolders] = useState<BookmarkFolder[]>([]);
 		  const [selectedBookmarkFolderId, setSelectedBookmarkFolderId] = useState<string | null>(null);
+		  const [showProfileThemes, setShowProfileThemes] = useState(false);
+		  const [currentTheme, setCurrentTheme] = useState('default');
+		  const [showStatusMood, setShowStatusMood] = useState(false);
+		  const [currentStatus, setCurrentStatus] = useState<UserStatus | null>(null);
+		  const [showLeaderboard, setShowLeaderboard] = useState(false);
+		  const [leaderboardPeriod, setLeaderboardPeriod] = useState<'weekly' | 'monthly' | 'allTime'>('weekly');
+		  const [showAudienceInsights, setShowAudienceInsights] = useState(false);
+		  const [showPhotoAlbums, setShowPhotoAlbums] = useState(false);
+		  const [photoAlbums, setPhotoAlbums] = useState<PhotoAlbum[]>([]);
+		  const [showBirthdays, setShowBirthdays] = useState(false);
+		  const [showCommunityModeration, setShowCommunityModeration] = useState(false);
 
 		 const recordPostView = async (postId: string) => {
 	    if (!user || !postId) return;
@@ -10772,23 +10934,6 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
               onOpenImage={handleOpenImage}
               onOpenProfile={handleOpenProfile}
               onShowLikes={setLikesPostId}
-            />
-          )}
-          {view === 'bookmarks' && (
-            <Bookmarks
-              key="bookmarks"
-              onOpenPost={handleOpenPost}
-              onOpenImage={handleOpenImage}
-              onOpenProfile={handleOpenProfile}
-              onShowLikes={setLikesPostId}
-              readingList={readingList}
-              setReadingList={setReadingList}
-              bookmarkFolders={bookmarkFolders}
-              selectedBookmarkFolderId={selectedBookmarkFolderId}
-              onSelectBookmarkFolder={onSelectBookmarkFolder}
-              onCreateBookmarkFolder={onCreateBookmarkFolder}
-              onDeleteBookmarkFolder={onDeleteBookmarkFolder}
-              onRenameBookmarkFolder={onRenameBookmarkFolder}
             />
           )}
           {view === 'notifications' && <Notifications key="notifications" onOpenPost={handleOpenPost} />}
