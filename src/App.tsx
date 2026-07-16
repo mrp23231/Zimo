@@ -101,6 +101,7 @@ import { ImageLightbox } from './components/ImageLightbox';
 import { PostCarousel } from './components/PostCarousel';
 import { PushNotifications } from './components/PushNotifications';
 import { UserBlock } from './components/UserBlock';
+import { PostReport } from './components/PostReport';
 import { VerificationBadge } from './components/VerificationBadge';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
@@ -4395,6 +4396,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   const [lightboxImages, setLightboxImages] = useState<string[]>([]);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [showLightbox, setShowLightbox] = useState(false);
+  const [reportingPost, setReportingPost] = useState<string | null>(null);
    const [scheduledAt, setScheduledAt] = useState<Date | null>(null);
    	   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
    	   const [pollError, setPollError] = useState<string | null>(null);
