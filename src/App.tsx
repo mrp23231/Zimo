@@ -10652,11 +10652,10 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 	            <Feed
 	              key="feed"
 	              onOpenPost={handleOpenPost}
-	             onOpenImage={openLightbox}
+	              onOpenImage={handleOpenImage}
 	              onOpenProfile={handleOpenProfile}
 	              searchHashtag={activeHashtag}
 	              onClearHashtag={() => setActiveHashtag(null)}
-	              onOpenImage={handleOpenImage}
 	              onShowLikes={setLikesPostId}
 	              onGoExplore={() => setView('explore')}
 	              onGoProfile={() => setView('profile')}
@@ -10665,12 +10664,11 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 	            />
 	          )}
           {view === 'explore' && (
-            <Explore 
+            <Explore
               key="explore"
               onOpenPost={handleOpenPost}
-              onOpenImage={openLightbox} 
-              onOpenProfile={handleOpenProfile} 
               onOpenImage={handleOpenImage}
+              onOpenProfile={handleOpenProfile}
               onShowLikes={setLikesPostId}
             />
           )}
@@ -10678,26 +10676,24 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
             <Bookmarks
               key="bookmarks"
               onOpenPost={handleOpenPost}
-              onOpenImage={openLightbox}
-              onOpenProfile={handleOpenProfile}
               onOpenImage={handleOpenImage}
+              onOpenProfile={handleOpenProfile}
               onShowLikes={setLikesPostId}
               readingList={readingList}
               setReadingList={setReadingList}
             />
           )}
           {view === 'notifications' && <Notifications key="notifications" onOpenPost={handleOpenPost}
-              onOpenImage={openLightbox} />}
+              onOpenImage={handleOpenImage} />}
           {view === 'profile' && (
             <Profile
               key="profile"
               readingList={readingList}
               setReadingList={setReadingList}
               onOpenPost={handleOpenPost}
-              onOpenImage={openLightbox} 
-              onOpenProfile={handleOpenProfile} 
-              onHashtagClick={handleHashtagClick} 
               onOpenImage={handleOpenImage}
+              onOpenProfile={handleOpenProfile}
+              onHashtagClick={handleHashtagClick}
               onShowLikes={setLikesPostId}
               onOpenAdmin={() => setView('admin')}
             />
@@ -10707,13 +10703,12 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
               key={`user_${selectedUser}`}
               readingList={readingList}
               setReadingList={setReadingList}
-              userId={selectedUser} 
+              userId={selectedUser}
               onOpenPost={handleOpenPost}
-              onOpenImage={openLightbox} 
-              onOpenProfile={handleOpenProfile} 
-              onHashtagClick={handleHashtagClick} 
-              onBack={() => setView('feed')} 
               onOpenImage={handleOpenImage}
+              onOpenProfile={handleOpenProfile}
+              onHashtagClick={handleHashtagClick}
+              onBack={() => setView('feed')}
               onShowLikes={setLikesPostId}
             />
           )}
@@ -10724,7 +10719,6 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
               onBack={() => setView('feed')}
               onOpenProfile={handleOpenProfile}
               onHashtagClick={handleHashtagClick}
-              onOpenImage={handleOpenImage}
               onShowLikes={setLikesPostId}
               readingList={readingList}
               setReadingList={setReadingList}
