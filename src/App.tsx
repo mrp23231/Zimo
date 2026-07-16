@@ -99,6 +99,7 @@ import { VirtualPostList } from './components/VirtualPostList';
 import { ProfileAnalytics } from './components/Profile/ProfileAnalytics';
 import { ImageLightbox } from './components/ImageLightbox';
 import { PostCarousel } from './components/PostCarousel';
+import { PushNotifications } from './components/PushNotifications';
 import { VerificationBadge } from './components/VerificationBadge';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
