@@ -5509,7 +5509,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   );
 }
 
-function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, onOpenImage, onShowLikes, onOpenAdmin, readingList, setReadingList, currentTheme, setCurrentTheme, showProfileThemes, setShowProfileThemes, showStatusMood, setShowStatusMood, showLeaderboard, setShowLeaderboard, leaderboardPeriod, setLeaderboardPeriod, showAudienceInsights, setShowAudienceInsights, showPhotoAlbums, setShowPhotoAlbums, photoAlbums, setPhotoAlbums, showBirthdays, setShowBirthdays, showCommunityModeration, setShowCommunityModeration }: {
+function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, onOpenImage, onShowLikes, onOpenAdmin, readingList, setReadingList }: {
   userId?: string,
   onOpenPost: (post: Post) => void,
   onOpenProfile?: (uid: string) => void,
@@ -10968,26 +10968,6 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
               onHashtagClick={handleHashtagClick}
               onShowLikes={setLikesPostId}
               onOpenAdmin={() => setView('admin')}
-              currentTheme={currentTheme}
-              setCurrentTheme={setCurrentTheme}
-              showProfileThemes={showProfileThemes}
-              setShowProfileThemes={setShowProfileThemes}
-              showStatusMood={showStatusMood}
-              setShowStatusMood={setShowStatusMood}
-              showLeaderboard={showLeaderboard}
-              setShowLeaderboard={setShowLeaderboard}
-              leaderboardPeriod={leaderboardPeriod}
-              setLeaderboardPeriod={setLeaderboardPeriod}
-              showAudienceInsights={showAudienceInsights}
-              setShowAudienceInsights={setShowAudienceInsights}
-              showPhotoAlbums={showPhotoAlbums}
-              setShowPhotoAlbums={setShowPhotoAlbums}
-              photoAlbums={photoAlbums}
-              setPhotoAlbums={setPhotoAlbums}
-              showBirthdays={showBirthdays}
-              setShowBirthdays={setShowBirthdays}
-              showCommunityModeration={showCommunityModeration}
-              setShowCommunityModeration={setShowCommunityModeration}
             />
           )}
           {view === 'user_profile' && selectedUser && (
@@ -11002,26 +10982,6 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
               onHashtagClick={handleHashtagClick}
               onBack={() => setView('feed')}
               onShowLikes={setLikesPostId}
-              currentTheme={currentTheme}
-              setCurrentTheme={setCurrentTheme}
-              showProfileThemes={showProfileThemes}
-              setShowProfileThemes={setShowProfileThemes}
-              showStatusMood={showStatusMood}
-              setShowStatusMood={setShowStatusMood}
-              showLeaderboard={showLeaderboard}
-              setShowLeaderboard={setShowLeaderboard}
-              leaderboardPeriod={leaderboardPeriod}
-              setLeaderboardPeriod={setLeaderboardPeriod}
-              showAudienceInsights={showAudienceInsights}
-              setShowAudienceInsights={setShowAudienceInsights}
-              showPhotoAlbums={showPhotoAlbums}
-              setShowPhotoAlbums={setShowPhotoAlbums}
-              photoAlbums={photoAlbums}
-              setPhotoAlbums={setPhotoAlbums}
-              showBirthdays={showBirthdays}
-              setShowBirthdays={setShowBirthdays}
-              showCommunityModeration={showCommunityModeration}
-              setShowCommunityModeration={setShowCommunityModeration}
             />
           )}
           {view === 'post_detail' && selectedPost && (
