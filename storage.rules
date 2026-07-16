@@ -12,6 +12,16 @@ service firebase.storage {
         request.resource.contentType.matches('image/.*');
     }
 
+    function isVideo() {
+      return request.resource != null &&
+        request.resource.contentType != null &&
+        request.resource.contentType.matches('video/.*');
+    }
+
+    function isStoryMedia() {
+      return isImage() || isVideo();
+    }
+
     function isAudio() {
       return request.resource != null &&
         request.resource.contentType != null &&
@@ -44,6 +54,7 @@ service firebase.storage {
     // - profiles/{uid}/avatar.jpg
     // - profiles/{uid}/header.jpg
     // - posts/{uid}/{ts}_{id}.(jpg|gif)
+    // - stories/{uid}/{ts}.(jpg|mp4)
     // - chats/{senderUid}/{receiverUid}/... (images/audio)
 
     match /profiles/{uid}/{fileName} {
@@ -54,6 +65,11 @@ service firebase.storage {
     match /posts/{uid}/{fileName} {
       allow read: if isAuthenticated();
       allow write: if isAuthenticated() && request.auth.uid == uid && isImage() && underSize(20 * 1024 * 1024);
+    }
+
+    match /stories/{uid}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == uid && isStoryMedia() && underSize(50 * 1024 * 1024);
     }
 
     match /chats/{senderUid}/{receiverUid}/{fileName} {

@@ -1,14 +1,22 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type ReactNode,
+} from "react";
 
 export type QueuedAction = {
   id: string;
   type: "create_post" | "like" | "comment" | "follow" | "delete_post" | "update_profile";
-  data: any;
+  data: Record<string, unknown>;
   timestamp: number;
   retryCount: number;
 };
 
-interface OfflineContextType {
+type OfflineContextType = {
   isOnline: boolean;
   queue: QueuedAction[];
   queueSize: number;
@@ -16,69 +24,66 @@ interface OfflineContextType {
   removeFromQueue: (id: string) => void;
   clearQueue: () => void;
   syncQueue: () => Promise<void>;
-}
+};
 
 const OfflineContext = createContext<OfflineContextType | null>(null);
 
-export const OfflineProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+const STORAGE_KEY = "offlineQueue";
+
+export const OfflineProvider: React.FC<{
+  children: ReactNode;
+  onSyncAction: (action: QueuedAction) => Promise<void>;
+}> = ({ children, onSyncAction }) => {
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof navigator !== "undefined" ? navigator.onLine : true
+  );
   const [queue, setQueue] = useState<QueuedAction[]>([]);
+  const onSyncRef = useRef(onSyncAction);
+  const syncingRef = useRef(false);
+
+  onSyncRef.current = onSyncAction;
 
   useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-      syncQueue();
-    };
-    const handleOffline = () => setIsOnline(false);
-
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-
-    const saved = localStorage.getItem("offlineQueue");
-    if (saved) {
-      try {
-        setQueue(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to parse offline queue:", e);
-      }
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setQueue(JSON.parse(saved));
+    } catch (e) {
+      console.error("Failed to parse offline queue:", e);
     }
-
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-    };
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("offlineQueue", JSON.stringify(queue));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+    } catch (e) {
+      console.error("Failed to save offline queue:", e);
+    }
   }, [queue]);
 
-  const addToQueue = useCallback((action: Omit<QueuedAction, "id" | "timestamp" | "retryCount">) => {
-    const newAction: QueuedAction = {
-      ...action,
-      id: Date.now() + "_" + Math.random().toString(36).substr(2, 9),
-      timestamp: Date.now(),
-      retryCount: 0,
-    };
-    setQueue(prev => [...prev, newAction]);
-  }, []);
-
-  const removeFromQueue = useCallback((id: string) => {
-    setQueue(prev => prev.filter(action => action.id !== id));
-  }, []);
-
-  const clearQueue = useCallback(() => {
-    setQueue([]);
-  }, []);
-
   const syncQueue = useCallback(async () => {
-    if (!isOnline || queue.length === 0) return;
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    if (syncingRef.current) return;
 
-    const actionsToSync = [...queue];
+    setQueue((current) => {
+      if (current.length === 0) return current;
+      return current;
+    });
+
+    const snapshot = await new Promise<QueuedAction[]>((resolve) => {
+      setQueue((current) => {
+        resolve([...current]);
+        return current;
+      });
+    });
+
+    if (snapshot.length === 0) return;
+
+    syncingRef.current = true;
     const successIds: string[] = [];
 
-    for (const action of actionsToSync) {
+    for (const action of snapshot) {
       try {
+        await onSyncRef.current(action);
         successIds.push(action.id);
       } catch (err) {
         console.error("Failed to sync action:", action.id, err);
@@ -86,20 +91,71 @@ export const OfflineProvider: React.FC<{ children: ReactNode }> = ({ children })
     }
 
     if (successIds.length > 0) {
-      setQueue(prev => prev.filter(action => !successIds.includes(action.id)));
+      setQueue((prev) => prev.filter((a) => !successIds.includes(a.id)));
     }
-  }, [isOnline, queue]);
+    syncingRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      void syncQueue();
+    };
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    const interval = window.setInterval(() => {
+      if (!navigator.onLine) setIsOnline(false);
+    }, 5000);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      window.clearInterval(interval);
+    };
+  }, [syncQueue]);
+
+  useEffect(() => {
+    if (isOnline && queue.length > 0) {
+      void syncQueue();
+    }
+  }, [isOnline, queue.length, syncQueue]);
+
+  const addToQueue = useCallback(
+    (action: Omit<QueuedAction, "id" | "timestamp" | "retryCount">) => {
+      const newAction: QueuedAction = {
+        ...action,
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
+        timestamp: Date.now(),
+        retryCount: 0,
+      };
+      setQueue((prev) => [...prev, newAction]);
+    },
+    []
+  );
+
+  const removeFromQueue = useCallback((id: string) => {
+    setQueue((prev) => prev.filter((action) => action.id !== id));
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    setQueue([]);
+  }, []);
 
   return (
-    <OfflineContext.Provider value={{
-      isOnline,
-      queue,
-      queueSize: queue.length,
-      addToQueue,
-      removeFromQueue,
-      clearQueue,
-      syncQueue,
-    }}>
+    <OfflineContext.Provider
+      value={{
+        isOnline,
+        queue,
+        queueSize: queue.length,
+        addToQueue,
+        removeFromQueue,
+        clearQueue,
+        syncQueue,
+      }}
+    >
       {children}
     </OfflineContext.Provider>
   );
@@ -109,6 +165,23 @@ export const useOffline = () => {
   const context = useContext(OfflineContext);
   if (!context) {
     throw new Error("useOffline must be used within OfflineProvider");
+  }
+  return context;
+};
+
+/** Safe hook when provider may be absent (returns online + no-op queue). */
+export const useOfflineOptional = () => {
+  const context = useContext(OfflineContext);
+  if (!context) {
+    return {
+      isOnline: typeof navigator !== "undefined" ? navigator.onLine : true,
+      queue: [] as QueuedAction[],
+      queueSize: 0,
+      addToQueue: () => {},
+      removeFromQueue: () => {},
+      clearQueue: () => {},
+      syncQueue: async () => {},
+    };
   }
   return context;
 };

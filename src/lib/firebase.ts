@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, type User } from 'firebase/auth';
-import { initializeFirestore, getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, addDoc, query, where, orderBy, limit, getDocs, getDocFromServer, onSnapshot, serverTimestamp, Timestamp, arrayUnion, arrayRemove, increment, runTransaction } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, addDoc, query, where, orderBy, limit, startAfter, getDocs, getDocFromServer, onSnapshot, serverTimestamp, Timestamp, arrayUnion, arrayRemove, increment, runTransaction } from 'firebase/firestore';
 import { getStorage, uploadBytesResumable } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -43,4 +43,4 @@ export { uploadBytesResumable, serverTimestamp, Timestamp, arrayUnion, arrayRemo
 export { increment };
 
 // Re-export Firestore functions
-export { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, addDoc, query, where, orderBy, limit, getDocs, getDocFromServer, onSnapshot, runTransaction };
+export { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, addDoc, query, where, orderBy, limit, startAfter, getDocs, getDocFromServer, onSnapshot, runTransaction };

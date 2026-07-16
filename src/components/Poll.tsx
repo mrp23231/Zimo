@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { cn } from '../lib/utils';
 
 interface PollOption {
@@ -183,6 +183,42 @@ export const PollDisplay: React.FC<PollDisplayProps> = ({
   };
 
   const isExpired = expiresAt && new Date() > expiresAt;
+  const [timeRemaining, setTimeRemaining] = useState(expiresAt ? expiresAt.getTime() - Date.now() : 0);
+
+  useEffect(() => {
+    if (!expiresAt || isExpired) return;
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const remaining = expiresAt.getTime() - now;
+      if (remaining <= 0) {
+        setTimeRemaining(0);
+        clearInterval(interval);
+      } else {
+        setTimeRemaining(remaining);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [expiresAt, isExpired]);
+
+  const formatTimeRemaining = (ms) => {
+    if (ms <= 0) return 'Expired';
+
+    const totalSeconds = Math.floor(ms / 1000);
+    const days = Math.floor(totalSeconds / (24 * 60 * 60));
+    const hours = Math.floor((totalSeconds % (24 * 60 * 60)) / (60 * 60));
+    const minutes = Math.floor((totalSeconds % (60 * 60)) / 60);
+    const seconds = totalSeconds % 60;
+
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+
+    return parts.join(' ');
+  };
 
   return (
     <div className={cn('space-y-4 border dark:border-zinc-800 rounded-xl p-4 bg-gray-50 dark:bg-zinc-800/50', className)}>
@@ -238,7 +274,9 @@ export const PollDisplay: React.FC<PollDisplayProps> = ({
       <div className='text-xs text-gray-500 dark:text-gray-400 flex justify-between'>
         <span>{totalVotes} total vote{totalVotes !== 1 ? 's' : ''}</span>
         {expiresAt && !isExpired && (
-          <span>Ends in {Math.round((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60))}h</span>
+          <span className={cn('font-mono', timeRemaining <= 60000 && 'text-red-500 dark:text-red-400 animate-pulse')}>
+            Ends in {formatTimeRemaining(timeRemaining)}
+          </span>
         )}
       </div>
     </div>

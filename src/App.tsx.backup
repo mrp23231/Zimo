@@ -15,15 +15,15 @@ import {
   updateProfile,
   User as FirebaseUser 
 } from 'firebase/auth';
-import {
-  collection,
-  doc,
-  setDoc,
-  getDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  addDoc,
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  addDoc, 
   serverTimestamp,
   Timestamp,
   where,
@@ -36,8 +36,7 @@ import {
   getDocs,
   increment,
   deleteField,
-  runTransaction,
-  startAfter
+  runTransaction
 } from './lib/firebase';
 import { 
   ref, 
@@ -50,15 +49,15 @@ import { enableWebPush, disableWebPush, attachForegroundPushListener } from './l
 
 import { cn } from './lib/utils';
 import { useOffline } from './lib/offline';
-import {
-  Home,
-  User,
-  MessageSquare,
-  PlusCircle,
-  LogOut,
-  Moon,
-  Sun,
-  Heart,
+import { 
+  Home, 
+  User, 
+  MessageSquare, 
+  PlusCircle, 
+  LogOut, 
+  Moon, 
+  Sun, 
+  Heart, 
   Send,
   ArrowLeft,
   Bell,
@@ -90,13 +89,8 @@ import {
   Square,
   BarChart2,
   BadgeCheck,
-  Shield,
-  History,
-  Clock
+  Shield
 } from 'lucide-react';
-import { GifPicker } from './components/GifPicker';
-import { VirtualPostList } from './components/VirtualPostList';
-import { ProfileAnalytics } from './components/Profile/ProfileAnalytics';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
 
@@ -317,15 +311,6 @@ const MESSAGE_REACTIONS = [
   { key: 'fire', emoji: '🔥' },
   { key: 'laugh', emoji: '😂' },
   { key: 'wow', emoji: '😮' },
-];
-
-const POST_REACTIONS = [
-  { key: 'like', emoji: '👍' },
-  { key: 'love', emoji: '❤️' },
-  { key: 'fire', emoji: '🔥' },
-  { key: 'laugh', emoji: '😂' },
-  { key: 'wow', emoji: '😮' },
-  { key: 'sad', emoji: '😢' },
 ];
 
 const BOOKMARK_QUERY_CHUNK = 10;
@@ -661,8 +646,6 @@ interface PollOption {
 	  pollOptions?: PollOption[];
 	  pollAllowRevote?: boolean;
 	  pollEndsAt?: Timestamp;
-	  reactions?: Record<string, string[]>;
-	  editedAt?: Timestamp;
 	}
 
 interface CommentNode extends Comment {
@@ -721,13 +704,6 @@ interface Message {
   pinned?: boolean;
   reactions?: Record<string, string[]>;
   read?: boolean;
-}
-
-interface PostEdit {
-  id: string;
-  content: string;
-  editedAt: Timestamp;
-  editorName: string;
 }
 
 type Language = 'en' | 'ru';
@@ -946,7 +922,6 @@ const translations = {
     commentsTitle: 'Comments ({count})',
     cancelReply: 'Cancel reply',
     reacted: 'Reacted',
-    reactions: 'Reactions',
     editMessage: 'Edit message',
     copy: 'Copy',
     copied: 'Copied',
@@ -1372,7 +1347,6 @@ const translations = {
     replyingTo: 'Ответ на',
     cancelReply: 'Отменить ответ',
     reacted: 'Реакция',
-    reactions: 'Реакции',
     editMessage: 'Редактировать',
     copy: 'Копировать',
     copied: 'Скопировано',
@@ -3284,9 +3258,7 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isA
   );
 }
 
-import { PostEditHistory } from './components/Post/PostEditHistory';
-
-function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, onShowLikes, canPin = false, isPinned = false, onTogglePin }: {
+function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, onShowLikes, canPin = false, isPinned = false, onTogglePin }: { 
   post: Post, 
   onOpen?: (post: Post) => void, 
   onOpenProfile?: (uid: string) => void, 
@@ -3314,15 +3286,10 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   const [repostText, setRepostText] = useState('');
   const [isReposting, setIsReposting] = useState(false);
   const [replyTo, setReplyTo] = useState<Comment | null>(null);
-  const [showReactionPicker, setShowReactionPicker] = useState(false);
-  const [showEditHistory, setShowEditHistory] = useState(false);
-  const [editHistory, setEditHistory] = useState<PostEdit[]>([]);
-  const [loadingEditHistory, setLoadingEditHistory] = useState(false);
   const carouselRef = useRef<HTMLDivElement | null>(null);
   const [carouselIndex, setCarouselIndex] = useState(0);
   const isLiked = post.likedBy?.includes(profile?.uid || '');
   const isBookmarked = profile?.bookmarks?.includes(post.id);
-  const postReactions = post.reactions || {};
   const commentTree = buildCommentTree(comments);
   const commentDescendantCountById = useMemo(() => buildCommentDescendantCountMap(commentTree), [commentTree]);
   const [collapsedCommentBranches, setCollapsedCommentBranches] = useState<Record<string, boolean>>({});
@@ -3343,26 +3310,6 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     const idx = Math.round(el.scrollLeft / w);
     setCarouselIndex(Math.max(0, Math.min(idx, (post.imageUrls?.length || 1) - 1)));
   };
-
-  useEffect(() => {
-    if (!showEditHistory || !post.id) return;
-    setLoadingEditHistory(true);
-    const q = query(
-      collection(db, 'posts', post.id, 'edits'),
-      orderBy('editedAt', 'desc')
-    );
-    const unsubscribe = safeOnSnapshot(q, (snapshot) => {
-      const edits = snapshot.docs.map(doc => ({
-        id: doc.id,
-        content: doc.data().content || '',
-        editedAt: doc.data().editedAt?.toDate() || new Date(),
-        editorName: doc.data().editorName || 'Unknown'
-      })) as PostEdit[];
-      setEditHistory(edits);
-      setLoadingEditHistory(false);
-    }, 'Failed to load edit history:');
-    return unsubscribe;
-  }, [showEditHistory, post.id]);
 
   useEffect(() => {
     if (!showComments) return;
@@ -3529,37 +3476,6 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
     }
   };
 
-  const handleReaction = async (e: React.MouseEvent, reactionKey: string) => {
-    e.stopPropagation();
-    if (!profile) return;
-    if (readOnly) {
-      showToast(t('readOnlyMode'), 'info');
-      return;
-    }
-    try {
-      const currentReactions = post.reactions || {};
-      const currentUsers = currentReactions[reactionKey] || [];
-      const hasReacted = currentUsers.includes(profile.uid);
-      
-      let nextReactions = { ...currentReactions };
-      
-      if (hasReacted) {
-        // Remove reaction
-        nextReactions[reactionKey] = currentUsers.filter(uid => uid !== profile.uid);
-        if (nextReactions[reactionKey].length === 0) {
-          delete nextReactions[reactionKey];
-        }
-      } else {
-        // Add reaction
-        nextReactions[reactionKey] = [...currentUsers, profile.uid];
-      }
-      
-      await updateDoc(doc(db, 'posts', post.id), { reactions: nextReactions });
-    } catch (err) {
-      showToast(t('genericError'), 'error');
-    }
-  };
-
   const handleBookmark = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!profile) return;
@@ -3662,24 +3578,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
       return;
     }
     try {
-      const previousContent = post.content;
-      const newContent = editContent.trim();
-      
-      // Update the post
-      await updateDoc(doc(db, 'posts', post.id), {
-        content: newContent,
-        editedAt: serverTimestamp()
-      });
-      
-      // Save to edit history
-      if (previousContent !== newContent) {
-        await addDoc(collection(db, 'posts', post.id, 'edits'), {
-          content: previousContent,
-          editedAt: serverTimestamp(),
-          editorName: profile?.displayName || 'Unknown'
-        });
-      }
-      
+      await updateDoc(doc(db, 'posts', post.id), { content: editContent.trim() });
       setIsEditing(false);
       showToast(t('updatePostSuccess'), "success");
     } catch (err) {
@@ -3881,11 +3780,8 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
             {post.authorUsername && (
               <div className="text-[10px] text-gray-400">{formatUsername(post.authorUsername)}</div>
             )}
-            <div className="text-[11px] text-gray-400 font-medium flex items-center gap-1">
+            <div className="text-[11px] text-gray-400 font-medium">
               {post.createdAt ? formatDistanceToNow(post.createdAt.toDate(), { addSuffix: true }) : t('justNow')}
-              {post.editedAt && (
-                <span className="text-gray-400">({t('edited')})</span>
-              )}
             </div>
           </div>
         </button>
@@ -3908,25 +3804,12 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
                 <Pin size={16} fill={isPinned ? 'currentColor' : 'none'} />
               </button>
             )}
-            <button
-              onClick={(e) => { e.stopPropagation(); setIsEditing(!isEditing); }}
+            <button 
+              onClick={(e) => { e.stopPropagation(); setIsEditing(!isEditing); }} 
               className="p-2 text-gray-300 hover:text-blue-500 transition-all rounded-full hover:bg-blue-50 dark:hover:bg-blue-900/20"
-              title="Edit post"
             >
               <Edit3 size={16} />
             </button>
-            {post.editedAt && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowEditHistory(true);
-                }}
-                className="p-2 text-gray-300 hover:text-purple-500 transition-all rounded-full hover:bg-purple-50 dark:hover:bg-purple-900/20"
-                title="View edit history"
-              >
-                <History size={16} />
-              </button>
-            )}
             <button onClick={handleDelete} className="p-2 text-gray-300 hover:text-red-500 transition-all rounded-full hover:bg-red-50 dark:hover:bg-red-900/20">
               <Trash2 size={16} />
             </button>
@@ -4106,7 +3989,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
 
       <div className="flex items-center justify-between text-gray-400 border-t dark:border-zinc-800 pt-4">
         <div className="flex items-center gap-6">
-          <button
+          <button 
             onClick={handleLike}
             className={cn(
               "flex items-center gap-1.5 transition-all active:scale-125",
@@ -4119,7 +4002,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
             >
               <Heart size={20} fill={isLiked ? "currentColor" : "none"} />
             </motion.div>
-            <span
+            <span 
               className="text-xs font-bold hover:underline"
               onClick={(e) => {
                 e.stopPropagation();
@@ -4129,53 +4012,6 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
               {post.likes || 0}
             </span>
           </button>
-          
-          {/* Reaction picker trigger */}
-          <div className="relative">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowReactionPicker(!showReactionPicker);
-              }}
-              className="flex items-center gap-1.5 hover:text-yellow-500 transition-colors"
-              title="Reactions"
-            >
-              <Smile size={20} />
-            </button>
-            
-            {/* Reaction picker dropdown */}
-            <AnimatePresence>
-              {showReactionPicker && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                  className="absolute bottom-full left-0 mb-2 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-2xl shadow-xl p-2 flex gap-1 z-50"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {POST_REACTIONS.map((r) => {
-                    const hasReacted = (postReactions[r.key] || []).includes(profile?.uid || '');
-                    return (
-                      <button
-                        key={r.key}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleReaction(e, r.key);
-                        }}
-                        className={cn(
-                          "text-2xl p-2 rounded-xl transition-all hover:scale-125 active:scale-95",
-                          hasReacted ? "bg-yellow-50 dark:bg-yellow-900/20" : "hover:bg-gray-50 dark:hover:bg-zinc-800"
-                        )}
-                        title={r.key}
-                      >
-                        {r.emoji}
-                      </button>
-                    );
-                  })}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
           <button 
             onClick={handleRepost}
             className="flex items-center gap-1.5 hover:text-green-500 transition-colors"
@@ -4207,30 +4043,6 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           <Bookmark size={20} fill={isBookmarked ? "currentColor" : "none"} />
         </button>
       </div>
-      
-      {/* Display existing reactions */}
-      {Object.keys(postReactions).length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mt-3">
-          {POST_REACTIONS.filter(r => (postReactions[r.key] || []).length > 0).map(r => (
-            <button
-              key={r.key}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleReaction(e, r.key);
-              }}
-              className={cn(
-                "flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border transition-all hover:scale-105",
-                (postReactions[r.key] || []).includes(profile?.uid || '')
-                  ? "bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300"
-                  : "bg-gray-50 dark:bg-zinc-800 border-gray-100 dark:border-zinc-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-zinc-700"
-              )}
-            >
-              <span>{r.emoji}</span>
-              <span>{(postReactions[r.key] || []).length}</span>
-            </button>
-          ))}
-        </div>
-      )}
 
       <AnimatePresence>
         {showComments && (
@@ -4343,20 +4155,11 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
           </motion.div>
         )}
       </AnimatePresence>
-      
-      <AnimatePresence>
-        {showEditHistory && (
-          <PostEditHistory
-            edits={editHistory}
-            onClose={() => setShowEditHistory(false)}
-          />
-        )}
-      </AnimatePresence>
     </motion.div>
   );
 }
 
-function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onClearHashtag, onOpenImage, onShowLikes, onGoExplore, onGoProfile }: {
+function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onClearHashtag, onOpenImage, onShowLikes, onGoExplore, onGoProfile }: { 
   onOpenPost: (post: Post) => void, 
   onOpenProfile: (uid: string) => void, 
   searchHashtag?: string | null, 
@@ -4384,12 +4187,9 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
    const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
    const [error, setError] = useState<string | null>(null);
    const [listHeight, setListHeight] = useState(600);
-   const [showPollOptions, setShowPollOptions] = useState(false);
-   const [showGifPicker, setShowGifPicker] = useState(false);
-   const [showScheduleOptions, setShowScheduleOptions] = useState(false);
-   const [scheduledAt, setScheduledAt] = useState<Date | null>(null);
-   	   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
-   	   const [pollError, setPollError] = useState<string | null>(null);
+  const [showPollOptions, setShowPollOptions] = useState(false);
+		   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
+		   const [pollError, setPollError] = useState<string | null>(null);
   const [pollAllowRevote, setPollAllowRevote] = useState(true);
   const [pollDurationHours, setPollDurationHours] = useState<number | null>(null);
 		   const listContainerRef = useRef<HTMLDivElement>(null);
@@ -4473,20 +4273,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       return () => clearTimeout(timer);
     }
   }, [error]);
-
-  // Keyboard navigation: close modals with Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (showGifPicker) setShowGifPicker(false);
-        if (showAnnouncement) setShowAnnouncement(false);
-        if (showScheduleOptions) setShowScheduleOptions(false);
-        if (showPollOptions) setShowPollOptions(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showGifPicker, showAnnouncement, showScheduleOptions, showPollOptions]);
   const [feedTab, setFeedTab] = useState<'global' | 'following'>('global');
   const [searchHashtag, setSearchHashtag] = useState<string | null>(null);
   const [followingUids, setFollowingUids] = useState<string[]>([]);
@@ -4684,30 +4470,25 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       }
     }
 
-    const isScheduled = showScheduleOptions && scheduledAt && new Date(scheduledAt) > new Date();
     if ((!trimmed && images.length === 0 && !showPollOptions) || !profile || uploading) return;
-    if (isScheduled && (!trimmed && images.length === 0)) return;
 
     try {
-       const postData: any = {
-         authorUid: profile.uid,
-         authorName: profile.displayName,
-         authorPhoto: profile.photoURL,
-         authorUsername: profile.username ? normalizeUsername(profile.username) : '',
-         authorVerified: profile.verified === true,
-         authorAccountStatus: profile.accountStatus || 'active',
-         authorRequiresReview: profile.requiresReview === true,
-         visibility: profile.isPrivate ? 'followers' : 'public',
-         content: trimmed,
-         imageUrls: images,
-         createdAt: isScheduled ? Timestamp.fromDate(new Date(scheduledAt)) : serverTimestamp(),
-         likes: 0,
-         likedBy: [],
-         views: 0,
-         reactions: {},
-         editedAt: null,
-         status: isScheduled ? 'scheduled' : 'published'
-       };
+	      const postData: any = {
+	        authorUid: profile.uid,
+	        authorName: profile.displayName,
+	        authorPhoto: profile.photoURL,
+	        authorUsername: profile.username ? normalizeUsername(profile.username) : '',
+	        authorVerified: profile.verified === true,
+	        authorAccountStatus: profile.accountStatus || 'active',
+	        authorRequiresReview: profile.requiresReview === true,
+	        visibility: profile.isPrivate ? 'followers' : 'public',
+	        content: trimmed,
+	        imageUrls: images,
+	        createdAt: serverTimestamp(),
+	        likes: 0,
+	        likedBy: [],
+	        views: 0
+	      };
 
       // Add poll data if poll is enabled
       if (showPollOptions) {
@@ -4762,8 +4543,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
       setPollError(null);
       setPollAllowRevote(true);
       setPollDurationHours(null);
-      setShowScheduleOptions(false);
-      setScheduledAt(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'posts');
       setError(t('postFailed').replace('{error}', t('genericError')));
@@ -5013,11 +4792,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 
   const trending = getTrendingHashtags();
 
-  const handleGifSelect = (gifUrl: string) => {
-    setImageUrls(prev => [...prev, gifUrl]);
-    setShowGifPicker(false);
-  };
-
   return (
     <div className="max-w-4xl mx-auto py-20 px-4 flex flex-col md:flex-row gap-8">
       <div className="flex-1 max-w-xl">
@@ -5089,28 +4863,22 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           </div>
         )}
 
-        <div className="flex gap-4 mb-8 border-b dark:border-zinc-800" role="tablist" aria-label="Feed tabs">
-          <button
+        <div className="flex gap-4 mb-8 border-b dark:border-zinc-800">
+          <button 
             onClick={() => setFeedTab('global')}
             className={cn(
               "pb-2 px-2 text-sm font-semibold transition-all",
               feedTab === 'global' ? "border-b-2 border-black dark:border-white text-black dark:text-white" : "text-gray-400"
             )}
-            role="tab"
-            aria-selected={feedTab === 'global'}
-            aria-controls="feed-panel"
           >
             {t('global')}
           </button>
-          <button
+          <button 
             onClick={() => setFeedTab('following')}
             className={cn(
               "pb-2 px-2 text-sm font-semibold transition-all",
               feedTab === 'following' ? "border-b-2 border-black dark:border-white text-black dark:text-white" : "text-gray-400"
             )}
-            role="tab"
-            aria-selected={feedTab === 'following'}
-            aria-controls="feed-panel"
           >
             {t('followingTab')}
           </button>
@@ -5172,7 +4940,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           )}
         </AnimatePresence>
 
-	        <form onSubmit={handlePost} className="mb-8 bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800 shadow-sm" aria-label="Create post">
+	        <form onSubmit={handlePost} className="mb-8 bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800 shadow-sm">
 	          <textarea
 	            ref={composerRef}
 	            value={content}
@@ -5180,8 +4948,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 	            placeholder={t('postPlaceholder')}
 	            className="w-full bg-transparent resize-none focus:outline-none text-lg min-h-[100px]"
 	            maxLength={1000}
-	            aria-label="Post content"
-	            aria-describedby="post-char-count"
 	          />
           
           {/* Upload previews with progress */}
@@ -5265,7 +5031,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 
           <div className="flex flex-col gap-3 mt-4 border-t border-gray-50 dark:border-zinc-800 pt-4">
             <div className="flex items-center gap-2">
-              <label className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors flex items-center gap-1 cursor-pointer" aria-label="Add images">
+              <label className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors flex items-center gap-1 cursor-pointer">
                 <ImageIcon size={20} />
                 <input
                   type="file"
@@ -5274,7 +5040,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                   className="hidden"
                   onChange={handleFileChange}
                   disabled={uploading}
-                  aria-label="Select images to upload"
                 />
                 {imageUrls.length > 0 && <span className="text-xs font-bold">{imageUrls.length}</span>}
               </label>
@@ -5283,29 +5048,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                 onClick={() => setShowPollOptions(!showPollOptions)}
                 className={`p-2 transition-colors ${showPollOptions ? 'text-blue-500' : 'text-gray-400 hover:text-black dark:hover:text-white'}`}
                 title="Add poll"
-                aria-label={showPollOptions ? 'Remove poll' : 'Add poll'}
-                aria-pressed={showPollOptions}
               >
                 <BarChart2 size={20} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowGifPicker(true)}
-                className="p-2 text-gray-400 hover:text-black dark:hover:text-white transition-colors"
-                title="Add GIF"
-                aria-label="Add GIF"
-              >
-                <Film size={20} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowScheduleOptions(!showScheduleOptions)}
-                className={`p-2 transition-colors ${showScheduleOptions ? 'text-blue-500' : 'text-gray-400 hover:text-black dark:hover:text-white'}`}
-                title="Schedule post"
-                aria-label={showScheduleOptions ? 'Remove schedule' : 'Schedule post'}
-                aria-pressed={showScheduleOptions}
-              >
-                <Clock size={20} />
               </button>
               {imageUrls.length > 0 && !uploading && (
                 <button
@@ -5317,7 +5061,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
                 </button>
               )}
               {uploading && <div className="w-4 h-4 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />}
-              <span id="post-char-count" className="text-xs text-gray-400">{content.length}/1000</span>
+              <span className="text-xs text-gray-400">{content.length}/1000</span>
             </div>
 
             {/* Poll options */}
@@ -5402,26 +5146,6 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
               </div>
             )}
 
-            {showScheduleOptions && (
-              <div className="flex flex-col gap-2 mt-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-gray-500 dark:text-gray-400">Schedule for:</span>
-                  <input
-                    type="datetime-local"
-                    value={scheduledAt ? new Date(scheduledAt.getTime() - scheduledAt.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ''}
-                    onChange={(e) => setScheduledAt(e.target.value ? new Date(e.target.value) : null)}
-                    min={new Date(Date.now() + 60000).toISOString().slice(0, 16)}
-                    className="flex-1 bg-gray-50 dark:bg-zinc-800 rounded-full px-4 py-2 text-xs focus:outline-none border dark:border-zinc-700"
-                  />
-                </div>
-                {scheduledAt && (
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    Will be published on {format(scheduledAt, 'MMM d, yyyy HH:mm')}
-                  </div>
-                )}
-              </div>
-            )}
-
             {!STORAGE_ENABLED && (
               <div className="flex gap-2">
                 <input
@@ -5441,11 +5165,10 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             )}
 
             <div className="flex justify-end">
-            <button
+            <button 
               type="submit"
               disabled={(!content.trim() && imageUrls.length === 0) || uploading}
               className="bg-black dark:bg-white text-white dark:text-black px-6 py-2 rounded-full font-medium disabled:opacity-50 transition-opacity"
-              aria-label={uploading ? t('uploading') : t('post')}
             >
               {uploading ? t('uploading') : t('post')}
             </button>
@@ -5453,44 +5176,7 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           </div>
 	        </form>
 
-	         <AnimatePresence>
-	           {showGifPicker && (
-	             <motion.div
-	               initial={{ opacity: 0 }}
-	               animate={{ opacity: 1 }}
-	               exit={{ opacity: 0 }}
-	               className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
-	               onClick={() => setShowGifPicker(false)}
-	             >
-	               <motion.div
-	                 initial={{ y: 12, opacity: 0, scale: 0.98 }}
-	                 animate={{ y: 0, opacity: 1, scale: 1 }}
-	                 exit={{ y: 12, opacity: 0, scale: 0.98 }}
-	                 transition={{ duration: 0.18 }}
-	                 onClick={(e) => e.stopPropagation()}
-	                 className="w-full max-w-lg bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl shadow-xl overflow-hidden"
-	               >
-	                 <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-zinc-800">
-	                   <h3 className="font-bold text-lg">GIFs</h3>
-	                   <button
-	                     onClick={() => setShowGifPicker(false)}
-	                     className="p-2 rounded-full hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
-	                     aria-label="Close"
-	                   >
-	                     <X size={18} />
-	                   </button>
-	                 </div>
-	                 <GifPicker
-	                   isOpen={showGifPicker}
-	                   onClose={() => setShowGifPicker(false)}
-	                   onSelect={handleGifSelect}
-	                 />
-	               </motion.div>
-	             </motion.div>
-	           )}
-	         </AnimatePresence>
-
-	         {!uploading && posts.length === 0 && (
+          {!uploading && posts.length === 0 && (
             <div className="mb-8 bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-dashed border-gray-200 dark:border-zinc-800">
               <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">{t('onboardingEmptyTitle')}</div>
               <div className="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300">
@@ -5533,22 +5219,21 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
             </div>
           )}
 
-	        <VirtualPostList<Post>
-	          items={posts}
-	          renderItem={(post) => (
-	            <PostCard
-	              post={post}
-	              onOpen={onOpenPost}
-	              onOpenProfile={onOpenProfile}
-	              onHashtagClick={(tag) => setSearchHashtag(tag)}
-	              onOpenImage={onOpenImage}
-	              onShowLikes={onShowLikes}
-	            />
-	          )}
-	          hasMore={hasMorePosts}
-	          onLoadMore={() => setPostsLimit(prev => prev + 20)}
-	          className="space-y-6"
-	        />
+	        <div className="space-y-6">
+	          <AnimatePresence mode="popLayout">
+	            {posts.map((post) => (
+              <PostCard 
+                key={post.id} 
+                post={post} 
+                onOpen={onOpenPost} 
+                onOpenProfile={onOpenProfile}
+                onHashtagClick={(tag) => setSearchHashtag(tag)}
+                onOpenImage={onOpenImage}
+                onShowLikes={onShowLikes}
+              />
+            ))}
+          </AnimatePresence>
+        </div>
         {hasMorePosts && (
           <div className="mt-8 flex justify-center">
             <button
@@ -5642,16 +5327,6 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     messages: true,
   }));
   const [stats, setStats] = useState({ followers: 0, following: 0 });
-  const [analytics, setAnalytics] = useState({
-    totalPosts: 0,
-    totalFollowers: 0,
-    totalFollowing: 0,
-    weeklyGrowth: 0,
-    bestPostingTime: '',
-    totalLikes: 0,
-    totalComments: 0,
-    engagementRate: 0,
-  });
   const [isFollowing, setIsFollowing] = useState(false);
   const [followRequested, setFollowRequested] = useState(false);
   const [postAlertsEnabled, setPostAlertsEnabled] = useState(false);
@@ -5808,56 +5483,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
     return unsub;
   }, [effectiveUid, isOwnProfile, isFollowing]);
 
-  useEffect(() => {
-    if (!userPosts.length) {
-      setAnalytics(prev => ({ ...prev, totalPosts: 0, totalLikes: 0, totalComments: 0, engagementRate: 0 }));
-      return;
-    }
-
-    const totalPosts = userPosts.length;
-    const totalLikes = userPosts.reduce((sum, post) => sum + (post.likes || 0), 0);
-    const totalComments = userPosts.reduce((sum, post) => sum + (post.commentsCount || 0), 0);
-    const engagementRate = totalPosts > 0 ? ((totalLikes + totalComments) / totalPosts).toFixed(1) : '0';
-
-    // Calculate best posting time
-    const hourCounts: Record<number, number> = {};
-    userPosts.forEach(post => {
-      if (post.createdAt) {
-        const date = post.createdAt.toDate ? post.createdAt.toDate() : new Date(post.createdAt);
-        const hour = date.getHours();
-        hourCounts[hour] = (hourCounts[hour] || 0) + 1;
-      }
-    });
-    const bestHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0];
-    const bestPostingTime = bestHour ? `${bestHour[0]}:00` : '';
-
-    // Calculate weekly growth (compare this week vs last week)
-    const now = new Date();
-    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-    const thisWeekPosts = userPosts.filter(post => {
-      const date = post.createdAt?.toDate ? post.createdAt.toDate() : new Date(post.createdAt);
-      return date >= weekAgo;
-    }).length;
-    const lastWeekPosts = userPosts.filter(post => {
-      const date = post.createdAt?.toDate ? post.createdAt.toDate() : new Date(post.createdAt);
-      return date >= twoWeeksAgo && date < weekAgo;
-    }).length;
-    const weeklyGrowth = lastWeekPosts > 0 ? Math.round(((thisWeekPosts - lastWeekPosts) / lastWeekPosts) * 100) : (thisWeekPosts > 0 ? 100 : 0);
-
-    setAnalytics({
-      totalPosts,
-      totalFollowers: stats.followers,
-      totalFollowing: stats.following,
-      weeklyGrowth,
-      bestPostingTime,
-      totalLikes,
-      totalComments,
-      engagementRate: Number(engagementRate),
-    });
-  }, [userPosts, stats.followers, stats.following]);
-
-    useEffect(() => {
+	  useEffect(() => {
 	    if (!isOwnProfile || !targetProfile) return;
 	    setEditName(targetProfile.displayName || '');
 		    setEditBio(targetProfile.bio || '');
@@ -6570,71 +6196,44 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
           </div>
         )}
 
-        <div className="mt-8 flex justify-center gap-12 border-y border-gray-100 dark:border-zinc-800 py-4 flex-wrap" role="tablist" aria-label="Profile sections">
-          <button
+        <div className="mt-8 flex justify-center gap-12 border-y border-gray-100 dark:border-zinc-800 py-4 flex-wrap">
+          <button 
             onClick={() => setActiveTab('posts')}
             className={cn(
               "text-center transition-all hover:scale-105",
               activeTab === 'posts' ? "opacity-100" : "opacity-50"
             )}
-            role="tab"
-            aria-selected={activeTab === 'posts'}
-            aria-controls="profile-panel"
           >
             <div className="font-bold text-lg">{userPosts.length}</div>
             <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('posts')}</div>
           </button>
-          <button
+          <button 
             onClick={() => setActiveTab('followers')}
             className={cn(
               "text-center transition-all hover:scale-105",
               activeTab === 'followers' ? "opacity-100" : "opacity-50"
             )}
-            role="tab"
-            aria-selected={activeTab === 'followers'}
-            aria-controls="profile-panel"
           >
             <div className="font-bold text-lg">{stats.followers}</div>
             <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('followers')}</div>
           </button>
-          <button
+          <button 
             onClick={() => setActiveTab('following')}
             className={cn(
               "text-center transition-all hover:scale-105",
               activeTab === 'following' ? "opacity-100" : "opacity-50"
             )}
-            role="tab"
-            aria-selected={activeTab === 'following'}
-            aria-controls="profile-panel"
           >
             <div className="font-bold text-lg">{stats.following}</div>
             <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('following')}</div>
           </button>
           {isOwnProfile && (
-            <button
-              onClick={() => setActiveTab('workshop')}
-              className={cn(
-                "text-center transition-all hover:scale-105",
-                activeTab === 'workshop' ? "opacity-100" : "opacity-50"
-              )}
-              role="tab"
-              aria-selected={activeTab === 'workshop'}
-              aria-controls="profile-panel"
-            >
-              <div className="font-bold text-lg">🎨</div>
-              <div className="text-[10px] text-gray-400 uppercase tracking-widest">Творческая мастерская</div>
-            </button>
-          )}
-          {isOwnProfile && (
-            <button
+            <button 
               onClick={() => setActiveTab('settings')}
               className={cn(
                 "text-center transition-all hover:scale-105",
                 activeTab === 'settings' ? "opacity-100" : "opacity-50"
               )}
-              role="tab"
-              aria-selected={activeTab === 'settings'}
-              aria-controls="profile-panel"
             >
               <div className="font-bold text-lg">{t('settingsShort')}</div>
               <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('settings')}</div>
@@ -6645,15 +6244,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
 
       <AnimatePresence mode="wait">
         {activeTab === 'posts' && (
-          <motion.div
+          <motion.div 
             key="posts"
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             className="grid grid-cols-1 gap-4"
-            id="profile-panel"
-            role="tabpanel"
-            aria-label="Posts"
           >
             {/* Show private message for private accounts that viewer can't see */}
             {!isOwnProfile && targetProfile?.isPrivate && !isFollowing && (
@@ -6703,15 +6299,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         )}
 
         {activeTab === 'followers' && (
-          <motion.div
+          <motion.div 
             key="followers"
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             className="space-y-4"
-            id="profile-panel"
-            role="tabpanel"
-            aria-label="Followers"
           >
             {followerProfiles.map(u => (
               <div key={u.uid} className="flex items-center justify-between bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800">
@@ -6745,15 +6338,12 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         )}
 
         {activeTab === 'following' && (
-          <motion.div
+          <motion.div 
             key="following"
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             className="space-y-4"
-            id="profile-panel"
-            role="tabpanel"
-            aria-label="Following"
           >
             {followingProfiles.map(u => (
               <div key={u.uid} className="flex items-center justify-between bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800">
@@ -6786,55 +6376,13 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
           </motion.div>
         )}
 
-        {activeTab === 'workshop' && isOwnProfile && (
-          <motion.div
-            key="workshop"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="space-y-4"
-            id="profile-panel"
-            role="tabpanel"
-            aria-label="Creative Workshop"
-          >
-            <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
-              <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">Творческая мастерская</div>
-              <div className="space-y-3">
-                <div className="text-sm text-gray-600 dark:text-gray-300">
-                  Здесь вы можете управлять своими закреплёнными постами и творческими проектами.
-                </div>
-                {pinnedPosts.length > 0 ? (
-                  <div className="space-y-3 mt-4">
-                    <div className="text-xs font-bold text-gray-500">Закреплённые посты</div>
-                    {pinnedPosts.map(post => (
-                      <div key={post.id} className="p-3 rounded-xl border border-gray-100 dark:border-zinc-800 bg-gray-50/50 dark:bg-zinc-800/30">
-                        <p className="text-sm text-gray-700 dark:text-gray-300 line-clamp-2">{post.content}</p>
-                        <div className="text-[10px] text-gray-400 mt-1">
-                          {formatDistanceToNow(post.createdAt?.toDate ? post.createdAt.toDate() : new Date(post.createdAt), { addSuffix: true })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-gray-400 text-sm">
-                    Нет закреплённых постов. Закрепите посты в своей ленте, чтобы они появились здесь.
-                  </div>
-                )}
-              </div>
-            </div>
-          </motion.div>
-        )}
-
         {activeTab === 'settings' && isOwnProfile && (
-          <motion.div
+          <motion.div 
             key="settings"
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             className="space-y-4"
-            id="profile-panel"
-            role="tabpanel"
-            aria-label="Settings"
           >
             {isAdmin && onOpenAdmin && (
               <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
@@ -6848,17 +6396,6 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 <div className="mt-2 text-[10px] text-gray-400 truncate">UID: {currentProfile?.uid}</div>
               </div>
             )}
-
-            <ProfileAnalytics
-              totalPosts={analytics.totalPosts}
-              totalFollowers={analytics.totalFollowers}
-              totalFollowing={analytics.totalFollowing}
-              weeklyGrowth={analytics.weeklyGrowth}
-              bestPostingTime={analytics.bestPostingTime}
-              totalLikes={analytics.totalLikes}
-              totalComments={analytics.totalComments}
-              engagementRate={analytics.engagementRate}
-            />
 
             <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-100 dark:border-zinc-800">
               <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-3">{t('profileInfo')}</div>

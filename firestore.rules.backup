@@ -51,19 +51,11 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isVerifiedUser(uid) {
-      return uid != null &&
-        exists(/databases/$(database)/documents/users/$(uid)) &&
-        get(/databases/$(database)/documents/users/$(uid)).data.verified == true;
-    }
-
     function isValidUser(data) {
       return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt']) &&
              data.uid == request.auth.uid &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 50 &&
              data.email is string &&
-             (!('socialVisibility' in data) || (data.socialVisibility is string && (data.socialVisibility == 'public' || data.socialVisibility == 'followers' || data.socialVisibility == 'private'))) &&
-             (!('socialLinks' in data) || isValidSocialLinks(data.socialLinks)) &&
              !('verified' in data) &&
              !('verifiedAt' in data) &&
              !('accountStatus' in data) &&
@@ -71,21 +63,6 @@ service cloud.firestore {
              !('blockedReason' in data) &&
              !('requiresReview' in data) &&
              !('reviewNote' in data);
-    }
-
-    function isValidSocialLinkUrl(u) {
-      return u is string && u.size() > 0 && u.size() <= 200 && u.matches('^https?://.*');
-    }
-
-    function isValidSocialLinks(data) {
-      return data is map &&
-        data.keys().hasOnly(['telegram', 'tiktok', 'instagram', 'youtube', 'x', 'website']) &&
-        (!('telegram' in data) || isValidSocialLinkUrl(data.telegram)) &&
-        (!('tiktok' in data) || isValidSocialLinkUrl(data.tiktok)) &&
-        (!('instagram' in data) || isValidSocialLinkUrl(data.instagram)) &&
-        (!('youtube' in data) || isValidSocialLinkUrl(data.youtube)) &&
-        (!('x' in data) || isValidSocialLinkUrl(data.x)) &&
-        (!('website' in data) || isValidSocialLinkUrl(data.website));
     }
 
     function followDocId(followerUid, followingUid) {
@@ -103,28 +80,23 @@ service cloud.firestore {
     }
 
     function isBlockedUser(uid) {
-      let path = /databases/$(database)/documents/users/$(uid);
       return uid != null &&
-        exists(path) &&
-        get(path).data.accountStatus == 'blocked' &&
-        (!('moderationExpiresAt' in get(path).data) || get(path).data.moderationExpiresAt == null || request.time < get(path).data.moderationExpiresAt);
+        exists(/databases/$(database)/documents/users/$(uid)) &&
+        get(/databases/$(database)/documents/users/$(uid)).data.accountStatus == 'blocked';
     }
 
     function isRestrictedUser(uid) {
-      let path = /databases/$(database)/documents/users/$(uid);
       return uid != null &&
-        exists(path) &&
-        get(path).data.accountStatus == 'restricted' &&
-        (!('moderationExpiresAt' in get(path).data) || get(path).data.moderationExpiresAt == null || request.time < get(path).data.moderationExpiresAt);
+        exists(/databases/$(database)/documents/users/$(uid)) &&
+        get(/databases/$(database)/documents/users/$(uid)).data.accountStatus == 'restricted';
     }
 
     function canWriteForSelf() {
-      // Admins can always write (otherwise a mis-set accountStatus can lock out maintenance/admin work).
-      return isAuthenticated() && (isAdmin() || (!isBlockedUser(request.auth.uid) && !isRestrictedUser(request.auth.uid)));
+      return isAuthenticated() && !isBlockedUser(request.auth.uid) && !isRestrictedUser(request.auth.uid);
     }
 
     function canReadForSelf() {
-      return isAuthenticated() && (isAdmin() || (!isBlockedUser(request.auth.uid) && !isRestrictedUser(request.auth.uid)));
+      return isAuthenticated() && !isBlockedUser(request.auth.uid) && !isRestrictedUser(request.auth.uid);
     }
 
     function desiredPostVisibility(authorUid) {
@@ -141,28 +113,17 @@ service cloud.firestore {
       // Do not use `get()` / `exists()` here, otherwise `list` queries can fail
       // with permission-denied due to cross-document read limits.
       //
-      // Current privacy model:
+      // Current privacy model (MVP):
       // - Unauthenticated: can read only public posts.
       // - Authenticated: can read public posts, own posts, and followers posts.
-      //   (Followers-post access is intentionally query-friendly.)
-      // - Private posts are readable only by their author.
+      //   (Followers-post access is not follower-gated here to keep queries working.)
       let v = postVisibility(data);
-      return (v == 'public') ||
-        (isAuthenticated() && (
-          data.authorUid == request.auth.uid ||
-          v == 'followers'
-        ));
+      return (v == 'public') || (isAuthenticated() && (data.authorUid == request.auth.uid || v == 'followers'));
     }
 
     function hasMedia(data) {
       return (('imageUrls' in data) && (data.imageUrls is list) && data.imageUrls.size() > 0) ||
              (('imageUrl' in data) && (data.imageUrl is string) && data.imageUrl.size() > 0);
-    }
-
-    function hasPostAttachment(data) {
-      return hasMedia(data) ||
-        (('hasPoll' in data) && data.hasPoll == true) ||
-        (('hasGiveaway' in data) && data.hasGiveaway == true);
     }
 
     function isValidPost(data) {
@@ -171,85 +132,16 @@ service cloud.firestore {
       return data.keys().hasAll(['authorUid', 'authorName', 'content', 'createdAt', 'likes', 'likedBy']) &&
              data.authorUid == request.auth.uid &&
              data.content is string && data.content.size() <= 1000 &&
-             (data.content.size() > 0 || hasPostAttachment(data)) &&
+             (data.content.size() > 0 || hasMedia(data)) &&
              data.likes is number &&
              data.likedBy is list &&
-             (!('hasPoll' in data) || data.hasPoll is bool) &&
-             (!('pollOptions' in data) || isValidPollOptions(data.pollOptions)) &&
-             (!('pollAllowRevote' in data) || data.pollAllowRevote is bool) &&
-             (!('pollEndsAt' in data) || data.pollEndsAt is timestamp) &&
-             (!('hasGiveaway' in data) || data.hasGiveaway is bool) &&
-             (!('giveawayEndsAt' in data) || data.giveawayEndsAt is timestamp) &&
-             (!('giveawayWinnersCount' in data) || (data.giveawayWinnersCount is number && data.giveawayWinnersCount >= 1 && data.giveawayWinnersCount <= 50)) &&
-             (!('giveawayStatus' in data) || (data.giveawayStatus is string && (data.giveawayStatus == 'open' || data.giveawayStatus == 'drawn'))) &&
-             (!('giveawayWinners' in data) || (data.giveawayWinners is list && data.giveawayWinners.size() <= 50)) &&
              (!('authorAccountStatus' in data) || (data.authorAccountStatus is string && (data.authorAccountStatus == 'active' || data.authorAccountStatus == 'restricted' || data.authorAccountStatus == 'blocked'))) &&
              (!('authorRequiresReview' in data) || data.authorRequiresReview is bool) &&
-             (!('visibility' in data) || (data.visibility is string && (data.visibility == 'public' || data.visibility == 'followers' || data.visibility == 'private'))) &&
+             (!('visibility' in data) || (data.visibility is string && (data.visibility == 'public' || data.visibility == 'followers'))) &&
              (!('imageUrls' in data) || data.imageUrls is list) &&
              (!('imageUrl' in data) || data.imageUrl is string) &&
              (!('views' in data) || data.views is number) &&
              (!('hiddenFrom' in data) || data.hiddenFrom is list);
-    }
-
-    function isValidPollOption(opt) {
-      return opt is map &&
-        opt.keys().hasAll(['text', 'votes']) &&
-        opt.text is string && opt.text.size() > 0 && opt.text.size() <= 50 &&
-        opt.votes is number && opt.votes >= 0;
-    }
-
-    function isValidPollOptions(opts) {
-      return opts is list &&
-        opts.size() >= 2 && opts.size() <= 6 &&
-        isValidPollOption(opts[0]) &&
-        isValidPollOption(opts[1]) &&
-        (opts.size() < 3 || isValidPollOption(opts[2])) &&
-        (opts.size() < 4 || isValidPollOption(opts[3])) &&
-        (opts.size() < 5 || isValidPollOption(opts[4])) &&
-        (opts.size() < 6 || isValidPollOption(opts[5]));
-    }
-
-    function safePollVoteUpdate(beforeData, afterData) {
-      // NOTE: Firestore Rules do not support statement-level `if`.
-      // Use boolean guards + short-circuiting to keep indexing safe.
-      let hasPollOptions = ('pollOptions' in beforeData) &&
-        ('pollOptions' in afterData) &&
-        (beforeData.pollOptions is list) &&
-        (afterData.pollOptions is list);
-
-      let n = hasPollOptions ? beforeData.pollOptions.size() : 0;
-      let sizeOk = hasPollOptions &&
-        (n == afterData.pollOptions.size()) &&
-        (n >= 2) && (n <= 6) &&
-        isValidPollOptions(afterData.pollOptions);
-
-      let textOk = sizeOk &&
-        (beforeData.pollOptions[0].text == afterData.pollOptions[0].text) &&
-        (beforeData.pollOptions[1].text == afterData.pollOptions[1].text) &&
-        (n < 3 || beforeData.pollOptions[2].text == afterData.pollOptions[2].text) &&
-        (n < 4 || beforeData.pollOptions[3].text == afterData.pollOptions[3].text) &&
-        (n < 5 || beforeData.pollOptions[4].text == afterData.pollOptions[4].text) &&
-        (n < 6 || beforeData.pollOptions[5].text == afterData.pollOptions[5].text);
-
-      let d0 = afterData.pollOptions[0].votes - beforeData.pollOptions[0].votes;
-      let d1 = afterData.pollOptions[1].votes - beforeData.pollOptions[1].votes;
-      let d2 = (n < 3) ? 0 : (afterData.pollOptions[2].votes - beforeData.pollOptions[2].votes);
-      let d3 = (n < 4) ? 0 : (afterData.pollOptions[3].votes - beforeData.pollOptions[3].votes);
-      let d4 = (n < 5) ? 0 : (afterData.pollOptions[4].votes - beforeData.pollOptions[4].votes);
-
-      // Per-option delta limited, and total delta must be +1 (first vote) or 0 (switch vote).
-      let totalDelta = d0 + d1 + d2 + d3 + d4 +
-        ((n < 6) ? 0 : (afterData.pollOptions[5].votes - beforeData.pollOptions[5].votes));
-
-      return textOk &&
-        d0 >= -1 && d0 <= 1 &&
-        d1 >= -1 && d1 <= 1 &&
-        d2 >= -1 && d2 <= 1 &&
-        d3 >= -1 && d3 <= 1 &&
-        d4 >= -1 && d4 <= 1 &&
-        (n < 6 || (((afterData.pollOptions[5].votes - beforeData.pollOptions[5].votes)) >= -1 && ((afterData.pollOptions[5].votes - beforeData.pollOptions[5].votes)) <= 1)) &&
-        (totalDelta == 1 || totalDelta == 0);
     }
 
     function isValidComment(data) {
@@ -309,16 +201,6 @@ service cloud.firestore {
       return afterViews == beforeViews + 1;
     }
 
-    function safeStoryViewUpdate(beforeData, afterData) {
-      let beforeViewed = (hasField(beforeData, 'viewedBy') && beforeData.viewedBy is list) ? beforeData.viewedBy : [];
-      let afterViewed = (hasField(afterData, 'viewedBy') && afterData.viewedBy is list) ? afterData.viewedBy : [];
-      return request.auth.uid != beforeData.authorUid &&
-        afterViewed.size() == beforeViewed.size() + 1 &&
-        afterViewed.hasAll(beforeViewed) &&
-        afterViewed.hasAny([request.auth.uid]) &&
-        !beforeViewed.hasAny([request.auth.uid]);
-    }
-
     function isValidFollow(data) {
       return data.keys().hasAll(['followerUid', 'followingUid', 'status', 'createdAt']) &&
         data.followerUid == request.auth.uid &&
@@ -363,52 +245,6 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
-    function canReadEvent(data) {
-      // Public events are readable for everyone (same model as public posts).
-      return (data.visibility == 'public') ||
-        (isAuthenticated() && (
-          isAdmin() ||
-          data.createdBy == request.auth.uid ||
-          (data.visibility == 'followers') ||
-          (data.visibility == 'inviteOnly' && ('invitedUserIds' in data) && (data.invitedUserIds is list) && request.auth.uid in data.invitedUserIds)
-        ));
-    }
-
-    function canJoinEvent(data) {
-      return isAuthenticated() &&
-        canWriteForSelf() &&
-        canReadEvent(data) &&
-        (!('allowedVerifiedOnly' in data) || data.allowedVerifiedOnly != true || isVerifiedUser(request.auth.uid));
-    }
-
-    function isValidEventBase(data) {
-      return data.keys().hasAll(['title', 'description', 'startDate', 'location', 'isOnline', 'visibility', 'maxParticipants', 'status', 'createdAt', 'createdBy']) &&
-        data.title is string && data.title.size() > 0 && data.title.size() <= 120 &&
-        data.description is string && data.description.size() > 0 && data.description.size() <= 5000 &&
-        data.startDate is timestamp &&
-        (!('endDate' in data) || data.endDate == null || data.endDate is timestamp) &&
-        data.location is string && data.location.size() <= 200 &&
-        data.isOnline is bool &&
-        (!('onlineUrl' in data) || data.onlineUrl is string) &&
-        data.visibility is string && (data.visibility == 'public' || data.visibility == 'followers' || data.visibility == 'inviteOnly') &&
-        data.maxParticipants is number && data.maxParticipants >= 0 && data.maxParticipants <= 50000 &&
-        (!('allowedVerifiedOnly' in data) || data.allowedVerifiedOnly is bool) &&
-        (!('invitedUserIds' in data) || (data.invitedUserIds is list && data.invitedUserIds.size() <= 500)) &&
-        (!('pinned' in data) || data.pinned is bool) &&
-        data.status is string && (data.status == 'upcoming' || data.status == 'completed' || data.status == 'cancelled') &&
-        data.createdBy is string;
-    }
-
-    function isValidEventCreate(data) {
-      return isValidEventBase(data) && data.createdBy == request.auth.uid;
-    }
-
-    function isValidEventUpdate(beforeData, afterData) {
-      return isValidEventBase(afterData) &&
-        afterData.createdBy == beforeData.createdBy &&
-        afterData.createdAt == beforeData.createdAt;
-    }
-
     match /users/{userId} {
       // Keep user reads query-friendly for features like global user search / chat list.
       // Do not restrict per-document reads here, otherwise `collection('users')` queries can fail.
@@ -419,8 +255,6 @@ service cloud.firestore {
     request.resource.data.uid == resource.data.uid &&
     request.resource.data.email == resource.data.email &&
     request.resource.data.createdAt == resource.data.createdAt &&
-    (!('socialVisibility' in request.resource.data) || (request.resource.data.socialVisibility is string && (request.resource.data.socialVisibility == 'public' || request.resource.data.socialVisibility == 'followers' || request.resource.data.socialVisibility == 'private'))) &&
-    (!('socialLinks' in request.resource.data) || isValidSocialLinks(request.resource.data.socialLinks)) &&
     // prevent self-verification / privilege escalation
     (!('verified' in request.resource.data) || request.resource.data.verified == resource.data.verified) &&
     (!('verifiedAt' in request.resource.data) || request.resource.data.verifiedAt == resource.data.verifiedAt) &&
@@ -461,16 +295,17 @@ service cloud.firestore {
     ]);
     }
 
-      allow delete: if isOwner(userId);
-
      match /posts/{postId} {
         // Query-friendly reads (no cross-document lookups in read path).
         allow read: if canReadPost(resource.data);
        allow create: if canWriteForSelf() &&
-         isValidPost(request.resource.data);
+         isValidPost(request.resource.data) &&
+         // Enforce that `visibility` matches the author's current privacy setting.
+         request.resource.data.visibility == desiredPostVisibility(request.auth.uid);
        allow update: if canWriteForSelf() && (
          (request.auth.uid == resource.data.authorUid &&
-           isValidPost(request.resource.data)
+           isValidPost(request.resource.data) &&
+           request.resource.data.visibility == desiredPostVisibility(request.auth.uid)
          ) ||
          // Profile sync: allow the post author to update display fields without editing the post body.
          (
@@ -498,16 +333,6 @@ service cloud.firestore {
          ) ||
          (
            isAuthenticated() &&
-           canReadPost(resource.data) &&
-           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'likes', 'likedBy'])
-         ) ||
-         (
-           isAuthenticated() &&
-           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pollOptions']) &&
-           safePollVoteUpdate(resource.data, request.resource.data)
-         ) ||
-         (
-           isAuthenticated() &&
            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views']) &&
            safeViewIncrement(resource.data, request.resource.data)
          )
@@ -519,11 +344,11 @@ service cloud.firestore {
           return get(/databases/$(database)/documents/posts/$(postId));
         }
 
-        allow read: if exists(/databases/$(database)/documents/posts/$(postId)) &&
+        allow read: if postDoc().exists() &&
           canReadPost(postDoc().data);
 
         allow create: if canWriteForSelf() &&
-          exists(/databases/$(database)/documents/posts/$(postId)) &&
+          postDoc().exists() &&
           canReadPost(postDoc().data) &&
           canCommentUser(postDoc().data.authorUid) &&
           isValidComment(request.resource.data);
@@ -540,75 +365,7 @@ service cloud.firestore {
 
         allow delete: if canWriteForSelf() &&
           (request.auth.uid == resource.data.authorUid ||
-           (exists(/databases/$(database)/documents/posts/$(postId)) && request.auth.uid == postDoc().data.authorUid));
-      }
-
-     match /pollVotes/{uid} {
-        function postDoc() {
-          return get(/databases/$(database)/documents/posts/$(postId));
-        }
-
-        function pollIsClosed(postData) {
-          return ('pollEndsAt' in postData) && (postData.pollEndsAt is timestamp) && (request.time >= postData.pollEndsAt);
-        }
-
-        allow read: if exists(/databases/$(database)/documents/posts/$(postId)) && canReadPost(postDoc().data);
-
-        allow create: if isAuthenticated() &&
-          request.auth.uid == uid &&
-          exists(/databases/$(database)/documents/posts/$(postId)) &&
-          canReadPost(postDoc().data) &&
-          ('hasPoll' in postDoc().data) && postDoc().data.hasPoll == true &&
-          ('pollOptions' in postDoc().data) && postDoc().data.pollOptions is list &&
-          request.resource.data.keys().hasAll(['optionIndex']) &&
-          request.resource.data.optionIndex is number &&
-          request.resource.data.optionIndex >= 0 &&
-          request.resource.data.optionIndex < postDoc().data.pollOptions.size() &&
-          !pollIsClosed(postDoc().data);
-
-        allow update: if isAuthenticated() &&
-          request.auth.uid == uid &&
-          exists(/databases/$(database)/documents/posts/$(postId)) &&
-          canReadPost(postDoc().data) &&
-          ('hasPoll' in postDoc().data) && postDoc().data.hasPoll == true &&
-          ('pollOptions' in postDoc().data) && postDoc().data.pollOptions is list &&
-          request.resource.data.keys().hasAll(['optionIndex']) &&
-          request.resource.data.optionIndex is number &&
-          request.resource.data.optionIndex >= 0 &&
-          request.resource.data.optionIndex < postDoc().data.pollOptions.size() &&
-          !pollIsClosed(postDoc().data) &&
-          // If revote disabled, forbid changing an existing vote.
-          (!('pollAllowRevote' in postDoc().data) || postDoc().data.pollAllowRevote == true);
-
-        allow delete: if isAuthenticated() && request.auth.uid == uid;
-      }
-
-      match /giveawayParticipants/{uid} {
-        function postDoc() {
-          return get(/databases/$(database)/documents/posts/$(postId));
-        }
-
-        function canJoinGiveaway(p) {
-          return isAuthenticated() &&
-            canWriteForSelf() &&
-            canReadPost(p) &&
-            (('hasGiveaway' in p) && p.hasGiveaway == true) &&
-            (!('giveawayStatus' in p) || p.giveawayStatus == 'open') &&
-            ('giveawayEndsAt' in p) &&
-            (p.giveawayEndsAt is timestamp) &&
-            request.time < p.giveawayEndsAt;
-        }
-
-        allow read: if exists(/databases/$(database)/documents/posts/$(postId)) &&
-          canReadPost(postDoc().data);
-
-        allow create, update: if exists(/databases/$(database)/documents/posts/$(postId)) &&
-          request.auth.uid == uid &&
-          canJoinGiveaway(postDoc().data) &&
-          request.resource.data.keys().hasAll(['uid']) &&
-          request.resource.data.uid == request.auth.uid;
-
-        allow delete: if isAuthenticated() && request.auth.uid == uid;
+           (postDoc().exists() && request.auth.uid == postDoc().data.authorUid));
       }
     }
 
@@ -642,42 +399,17 @@ service cloud.firestore {
       allow delete: if canWriteForSelf() && request.auth.uid == resource.data.toUid;
     }
 
-    match /events/{eventId} {
-      allow read: if canReadEvent(resource.data);
-      allow create: if isAdmin() && isValidEventCreate(request.resource.data);
-      allow update: if isAdmin() && isValidEventUpdate(resource.data, request.resource.data);
-      allow delete: if isAdmin();
-
-      match /participants/{uid} {
-        allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == uid);
-        allow create, update: if isAuthenticated() &&
-          request.auth.uid == uid &&
-          canJoinEvent(get(/databases/$(database)/documents/events/$(eventId)).data) &&
-          request.resource.data.keys().hasAll(['uid', 'status']) &&
-          request.resource.data.uid == request.auth.uid &&
-          request.resource.data.status is string &&
-          (request.resource.data.status == 'going' || request.resource.data.status == 'not_going');
-        allow delete: if isAuthenticated() && request.auth.uid == uid;
-      }
-    }
-
-     match /reports/{reportId} {
-        // Allow users to report content; do not expose reports to clients by default.
-        allow create: if canWriteForSelf() &&
-          request.resource.data.keys().hasAll(['reporterUid', 'targetType', 'targetId', 'reason', 'createdAt', 'status']) &&
-          request.resource.data.reporterUid == request.auth.uid &&
-          request.resource.data.status == 'pending';
-        allow read: if isAdmin() || request.auth.uid == resource.data.reporterUid;
-        allow update: if isAdmin() &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'status',
-            'reviewedAt',
-            'reviewedBy',
-            'actionTaken',
-            'actionNote'
-          ]);
-        allow delete: if isAdmin();
-      }
+    match /reports/{reportId} {
+       // Allow users to report content; do not expose reports to clients by default.
+       allow create: if canWriteForSelf() &&
+         request.resource.data.keys().hasAll(['postId', 'reporterUid', 'authorUid', 'createdAt', 'status']) &&
+         request.resource.data.reporterUid == request.auth.uid &&
+         request.resource.data.status == 'pending';
+       allow read: if true;
+       allow update: if isAdmin() &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewedAt', 'reviewedBy']);
+       allow delete: if isAdmin();
+     }
 
     match /verificationRequests/{uid} {
       allow read: if isAuthenticated() &&
@@ -695,7 +427,7 @@ service cloud.firestore {
         (!('reason' in request.resource.data) || request.resource.data.reason is string) &&
         (!('evidenceLinks' in request.resource.data) || (request.resource.data.evidenceLinks is list && request.resource.data.evidenceLinks.size() <= 3));
 
-      allow delete: if isAdmin() || isOwner(uid);
+      allow delete: if isAdmin();
 
       // Admins can approve/reject (and optionally stamp verifiedAt on the user doc separately).
       allow update: if isAdmin();
@@ -717,19 +449,6 @@ service cloud.firestore {
       // Public read so everyone can see announcements.
       allow read: if true;
       allow create, update, delete: if isAdmin();
-    }
-
-    match /stories/{storyId} {
-      allow read: if isAuthenticated();
-      allow create: if canWriteForSelf() &&
-        request.resource.data.authorUid == request.auth.uid &&
-        request.resource.data.keys().hasAll(['authorUid', 'authorName', 'mediaUrl', 'createdAt', 'expiresAt', 'mediaType']) &&
-        request.resource.data.mediaType in ['image', 'video'] &&
-        request.resource.data.mediaUrl is string &&
-        request.resource.data.mediaUrl.size() > 0 &&
-        request.resource.data.mediaUrl.size() < 950000;
-      allow delete: if canWriteForSelf() && request.auth.uid == resource.data.authorUid;
-      allow update: if isAuthenticated() && safeStoryViewUpdate(resource.data, request.resource.data);
     }
 
     match /messages/{messageId} {

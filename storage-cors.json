@@ -1,0 +1,8 @@
+[
+  {
+    "origin": ["http://localhost:3000", "http://127.0.0.1:3000", "https://zimo-554fd.web.app", "https://zimo-554fd.firebaseapp.com"],
+    "method": ["GET", "HEAD", "PUT", "POST", "DELETE", "OPTIONS"],
+    "responseHeader": ["Content-Type", "Authorization", "Content-Length", "x-goog-resumable", "x-goog-upload-command", "x-goog-upload-header-content-length", "x-goog-upload-header-content-type", "x-goog-upload-offset", "x-goog-upload-protocol"],
+    "maxAgeSeconds": 3600
+  }
+]
