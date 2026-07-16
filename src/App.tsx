@@ -75,6 +75,7 @@ import {
   MessageCircle,
   Compass,
   Bookmark,
+  BookmarkCheck,
   Share2,
   Check,
   Info,
@@ -108,6 +109,9 @@ import { StoryHighlights } from './components/StoryHighlights';
 import { UserRecommendations } from './components/UserRecommendations';
 import { TrendingHashtags } from './components/TrendingHashtags';
 import { ExplorePage } from './components/ExplorePage';
+import { PostTemplates } from './components/PostTemplates';
+import { ContentFilters } from './components/ContentFilters';
+import { ReadingList } from './components/ReadingList';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
 
@@ -675,6 +679,21 @@ interface PollOption {
 	  reactions?: Record<string, string[]>;
 	  editedAt?: Timestamp;
 	}
+
+interface PostTemplate {
+	id: string;
+	title: string;
+	content: string;
+	createdAt: number;
+}
+
+interface SavedPost {
+	id: string;
+	content: string;
+	authorName: string;
+	authorPhoto: string;
+	savedAt: number;
+}
 
 interface CommentNode extends Comment {
   children: CommentNode[];
@@ -2538,11 +2557,13 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   );
 }
 
-function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: { 
-  onOpenPost: (post: Post) => void, 
+function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes, readingList, setReadingList }: {
+  onOpenPost: (post: Post) => void,
   onOpenProfile: (uid: string) => void,
   onOpenImage: (url: string) => void,
   onShowLikes: (postId: string) => void,
+  readingList?: SavedPost[],
+  setReadingList?: (posts: SavedPost[] | ((prev: SavedPost[]) => SavedPost[])) => void,
   key?: string
 }) {
   const { profile } = useAuth();
@@ -2625,8 +2646,10 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
       ) : bookmarkedPosts.length > 0 ? (
         <div className="space-y-6">
           {bookmarkedPosts.map(post => (
-            <PostCard 
-              key={post.id} 
+            <PostCard
+              key={post.id}
+              readingList={readingList}
+              setReadingList={setReadingList}
               post={post} 
               onOpen={onOpenPost} 
               onOpenProfile={onOpenProfile} 
@@ -2991,6 +3014,16 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isA
           })}
         </div>
         <div className="flex items-center gap-4">
+          <ReadingList
+            posts={readingList}
+            onViewPost={(postId) => {
+              setSelectedPost({ id: postId } as Post);
+              setView('post_detail');
+            }}
+            onUnsave={(postId) => {
+              setReadingList(prev => prev.filter(p => p.id !== postId));
+            }}
+          />
           {profile?.photoURL && (
             <img src={profile.photoURL || undefined} loading="lazy" className="w-8 h-8 rounded-full object-cover cursor-pointer hidden md:block" referrerPolicy="no-referrer" alt="" onClick={() => setView('profile')} />
           )}
@@ -3026,17 +3059,19 @@ function Navbar({ currentView, setView, darkMode, setDarkMode, onSearchUser, isA
 
 import { PostEditHistory } from './components/Post/PostEditHistory';
 
-function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, onShowLikes, canPin = false, isPinned = false, onTogglePin }: {
-  post: Post, 
-  onOpen?: (post: Post) => void, 
-  onOpenProfile?: (uid: string) => void, 
-  onHashtagClick?: (tag: string) => void, 
+function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, onShowLikes, canPin = false, isPinned = false, onTogglePin, readingList, setReadingList }: {
+  post: Post,
+  onOpen?: (post: Post) => void,
+  onOpenProfile?: (uid: string) => void,
+  onHashtagClick?: (tag: string) => void,
   onOpenImage?: (url: string) => void,
   onShowLikes?: (postId: string) => void,
   canPin?: boolean,
   isPinned?: boolean,
   onTogglePin?: (post: Post) => void,
-  key?: string 
+  readingList?: SavedPost[],
+  setReadingList?: (posts: SavedPost[] | ((prev: SavedPost[]) => SavedPost[])) => void,
+  key?: string
 }) {
   const { profile } = useAuth();
   const { showToast } = useToast();
@@ -3946,6 +3981,36 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
         >
           <Bookmark size={20} fill={isBookmarked ? "currentColor" : "none"} />
         </button>
+        {readingList && setReadingList && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const isInReadingList = readingList.some(p => p.id === post.id);
+              if (isInReadingList) {
+                setReadingList(prev => prev.filter(p => p.id !== post.id));
+                showToast('Удалено из списка для чтения', 'info');
+              } else {
+                const savedPost: SavedPost = {
+                  id: post.id,
+                  content: post.content,
+                  authorName: post.authorName,
+                  authorPhoto: post.authorPhoto,
+                  savedAt: Date.now()
+                };
+                setReadingList(prev => [...prev, savedPost]);
+                showToast('Добавлено в список для чтения', 'success');
+              }
+            }}
+            className={cn(
+              "p-2 rounded-full transition-all active:scale-125",
+              readingList.some(p => p.id === post.id)
+                ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20"
+                : "hover:bg-gray-100 dark:hover:bg-zinc-800"
+            )}
+          >
+            <BookmarkCheck size={20} />
+          </button>
+        )}
       </div>
       
       {/* Display existing reactions */}
@@ -4096,16 +4161,18 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   );
 }
 
-function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onClearHashtag, onOpenImage, onShowLikes, onGoExplore, onGoProfile }: {
-  onOpenPost: (post: Post) => void, 
-  onOpenProfile: (uid: string) => void, 
-  searchHashtag?: string | null, 
+function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onClearHashtag, onOpenImage, onShowLikes, onGoExplore, onGoProfile, readingList, setReadingList }: {
+  onOpenPost: (post: Post) => void,
+  onOpenProfile: (uid: string) => void,
+  searchHashtag?: string | null,
   onClearHashtag?: () => void,
   onOpenImage: (url: string) => void,
   onShowLikes: (postId: string) => void,
   onGoExplore?: () => void,
   onGoProfile?: () => void,
-  key?: string 
+  readingList?: SavedPost[],
+  setReadingList?: (posts: SavedPost[] | ((prev: SavedPost[]) => SavedPost[])) => void,
+  key?: string
 }) {
   const { t } = useSettings();
   const { readOnly, legacyAnnouncement } = useAppConfig();
@@ -4861,6 +4928,13 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           </button>
         </div>
 
+        <div className="mb-4">
+          <ContentFilters
+            activeFilter={contentFilter}
+            onFilterChange={setContentFilter}
+          />
+        </div>
+
         <AnimatePresence>
           {showAnnouncement && announcement && (
             <motion.div
@@ -4918,6 +4992,24 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
         </AnimatePresence>
 
 	        <form onSubmit={handlePost} className="mb-8 bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-gray-100 dark:border-zinc-800 shadow-sm" aria-label="Create post">
+	          <PostTemplates
+	            templates={postTemplates}
+	            onSelect={(template) => {
+	              setContent(template.content);
+	              composerRef.current?.focus();
+	            }}
+	            onSave={(template) => {
+	              const newTemplate: PostTemplate = {
+	                ...template,
+	                id: Date.now().toString(),
+	                createdAt: Date.now()
+	              };
+	              setPostTemplates(prev => [...prev, newTemplate]);
+	            }}
+	            onDelete={(id) => {
+	              setPostTemplates(prev => prev.filter(t => t.id !== id));
+	            }}
+	          />
 	          <textarea
 	            ref={composerRef}
 	            value={content}
@@ -5283,6 +5375,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
 	          renderItem={(post) => (
 	            <PostCard
 	              post={post}
+	              readingList={readingList}
+	              setReadingList={setReadingList}
 	              onOpen={onOpenPost}
 	              onOpenProfile={onOpenProfile}
 	              onHashtagClick={(tag) => setSearchHashtag(tag)}
@@ -5343,15 +5437,17 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   );
 }
 
-function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, onOpenImage, onShowLikes, onOpenAdmin }: { 
-  userId?: string, 
-  onOpenPost: (post: Post) => void, 
-  onOpenProfile?: (uid: string) => void, 
-  onHashtagClick?: (tag: string) => void, 
+function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, onOpenImage, onShowLikes, onOpenAdmin, readingList, setReadingList }: {
+  userId?: string,
+  onOpenPost: (post: Post) => void,
+  onOpenProfile?: (uid: string) => void,
+  onHashtagClick?: (tag: string) => void,
   onBack?: () => void,
   onOpenImage: (url: string) => void,
   onShowLikes: (postId: string) => void,
   onOpenAdmin?: () => void,
+  readingList?: SavedPost[],
+  setReadingList?: (posts: SavedPost[] | ((prev: SavedPost[]) => SavedPost[])) => void,
   key?: string
 }) {
   const { darkMode, setDarkMode, language, setLanguage, notificationsEnabled, setNotificationsEnabled, toastsEnabled, setToastsEnabled, verificationNotificationsEnabled, setVerificationNotificationsEnabled, t } = useSettings();
@@ -6422,8 +6518,14 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
               <div className="space-y-4">
                 <div className="text-[10px] text-gray-400 uppercase tracking-[0.24em]">{t('pinnedPosts')}</div>
                 {pinnedPosts.map(post => (
-                  <PostCard 
-                    key={post.id} 
+                  <PostCard
+                    key={post.id}
+                    readingList={readingList}
+                    setReadingList={setReadingList}
+                    readingList={readingList}
+                    setReadingList={setReadingList}
+                    readingList={readingList}
+                    setReadingList={setReadingList}
                     post={post} 
                     onOpen={onOpenPost} 
                     onOpenProfile={onBack ? (uid) => onOpenProfile?.(uid) : undefined} 
@@ -9575,13 +9677,15 @@ function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
 
 // --- Main App ---
 
-function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, onShowLikes }: { 
-  post: Post, 
-  onBack: () => void, 
-  onOpenProfile: (uid: string) => void, 
+function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, onShowLikes, readingList, setReadingList }: {
+  post: Post,
+  onBack: () => void,
+  onOpenProfile: (uid: string) => void,
   onHashtagClick?: (tag: string) => void,
   onOpenImage: (url: string) => void,
   onShowLikes: (postId: string) => void,
+  readingList?: SavedPost[],
+  setReadingList?: (posts: SavedPost[] | ((prev: SavedPost[]) => SavedPost[])) => void,
   key?: string
 }) {
   const { profile } = useAuth();
@@ -9728,7 +9832,7 @@ function PostDetail({ post, onBack, onOpenProfile, onHashtagClick, onOpenImage, 
         <span className="font-medium">{t('back')}</span>
       </button>
 
-      <PostCard post={post} onOpenProfile={onOpenProfile} onHashtagClick={onHashtagClick} onOpenImage={onOpenImage} onShowLikes={onShowLikes} />
+      <PostCard post={post} onOpenProfile={onOpenProfile} onHashtagClick={onHashtagClick} onOpenImage={onOpenImage} onShowLikes={onShowLikes} readingList={readingList} setReadingList={setReadingList} />
 
       {likedByUsers.length > 0 && (
         <div className="mt-6 p-4 bg-white dark:bg-zinc-900 rounded-2xl border border-gray-50 dark:border-zinc-800">
@@ -10141,6 +10245,9 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 	  const accountRequiresReview = profile?.requiresReview === true;
 		  const [disablingMaintenance, setDisablingMaintenance] = useState(false);
 		  const seenPostViewsRef = useRef(new Set<string>());
+		  const [contentFilter, setContentFilter] = useState<'all' | 'images' | 'videos' | 'text' | 'hashtags'>('all');
+		  const [readingList, setReadingList] = useState<SavedPost[]>([]);
+		  const [postTemplates, setPostTemplates] = useState<PostTemplate[]>([]);
 
 	  const recordPostView = async (postId: string) => {
 	    if (!user || !postId) return;
@@ -10542,17 +10649,19 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
       <main className={cn(isChatView ? "pt-0 pb-0" : "pb-24 pt-6 md:pt-16", isOffline && "pt-10")}>
         <AnimatePresence mode="wait">
 	          {view === 'feed' && (
-	            <Feed 
+	            <Feed
 	              key="feed"
 	              onOpenPost={handleOpenPost}
-              onOpenImage={openLightbox} 
-	              onOpenProfile={handleOpenProfile} 
+	             onOpenImage={openLightbox}
+	              onOpenProfile={handleOpenProfile}
 	              searchHashtag={activeHashtag}
 	              onClearHashtag={() => setActiveHashtag(null)}
 	              onOpenImage={handleOpenImage}
 	              onShowLikes={setLikesPostId}
 	              onGoExplore={() => setView('explore')}
 	              onGoProfile={() => setView('profile')}
+	              readingList={readingList}
+	              setReadingList={setReadingList}
 	            />
 	          )}
           {view === 'explore' && (
@@ -10566,20 +10675,24 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
             />
           )}
           {view === 'bookmarks' && (
-            <Bookmarks 
+            <Bookmarks
               key="bookmarks"
               onOpenPost={handleOpenPost}
-              onOpenImage={openLightbox} 
-              onOpenProfile={handleOpenProfile} 
+              onOpenImage={openLightbox}
+              onOpenProfile={handleOpenProfile}
               onOpenImage={handleOpenImage}
               onShowLikes={setLikesPostId}
+              readingList={readingList}
+              setReadingList={setReadingList}
             />
           )}
           {view === 'notifications' && <Notifications key="notifications" onOpenPost={handleOpenPost}
               onOpenImage={openLightbox} />}
           {view === 'profile' && (
-            <Profile 
+            <Profile
               key="profile"
+              readingList={readingList}
+              setReadingList={setReadingList}
               onOpenPost={handleOpenPost}
               onOpenImage={openLightbox} 
               onOpenProfile={handleOpenProfile} 
@@ -10590,8 +10703,10 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
             />
           )}
           {view === 'user_profile' && selectedUser && (
-            <Profile 
+            <Profile
               key={`user_${selectedUser}`}
+              readingList={readingList}
+              setReadingList={setReadingList}
               userId={selectedUser} 
               onOpenPost={handleOpenPost}
               onOpenImage={openLightbox} 
@@ -10603,14 +10718,16 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
             />
           )}
           {view === 'post_detail' && selectedPost && (
-            <PostDetail 
+            <PostDetail
               key={`post_${selectedPost.id}`}
-              post={selectedPost} 
-              onBack={() => setView('feed')} 
-              onOpenProfile={handleOpenProfile} 
-              onHashtagClick={handleHashtagClick} 
+              post={selectedPost}
+              onBack={() => setView('feed')}
+              onOpenProfile={handleOpenProfile}
+              onHashtagClick={handleHashtagClick}
               onOpenImage={handleOpenImage}
               onShowLikes={setLikesPostId}
+              readingList={readingList}
+              setReadingList={setReadingList}
             />
           )}
           {view === 'messages' && (
