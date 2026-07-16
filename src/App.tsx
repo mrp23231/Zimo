@@ -4164,7 +4164,7 @@ function PostCard({ post, onOpen, onOpenProfile, onHashtagClick, onOpenImage, on
   );
 }
 
-function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onClearHashtag, onOpenImage, onShowLikes, onGoExplore, onGoProfile, readingList, setReadingList, contentFilter, setContentFilter }: {
+function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onClearHashtag, onOpenImage, onShowLikes, onGoExplore, onGoProfile, readingList, setReadingList, contentFilter, setContentFilter, postTemplates, setPostTemplates }: {
   onOpenPost: (post: Post) => void,
   onOpenProfile: (uid: string) => void,
   searchHashtag?: string | null,
@@ -4177,6 +4177,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
   setReadingList?: (posts: SavedPost[] | ((prev: SavedPost[]) => SavedPost[])) => void,
   contentFilter?: 'all' | 'images' | 'videos' | 'text' | 'hashtags',
   setContentFilter?: (filter: 'all' | 'images' | 'videos' | 'text' | 'hashtags') => void,
+  postTemplates?: PostTemplate[],
+  setPostTemplates?: (templates: PostTemplate[] | ((prev: PostTemplate[]) => PostTemplate[])) => void,
   key?: string
 }) {
   const { t } = useSettings();
@@ -10671,6 +10673,8 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 	              setReadingList={setReadingList}
 	              contentFilter={contentFilter}
 	              setContentFilter={setContentFilter}
+	              postTemplates={postTemplates}
+	              setPostTemplates={setPostTemplates}
 	            />
 	          )}
           {view === 'explore' && (
