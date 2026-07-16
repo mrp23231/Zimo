@@ -104,6 +104,10 @@ import { UserBlock } from './components/UserBlock';
 import { PostReport } from './components/PostReport';
 import { Drafts } from './components/Drafts';
 import { VerificationBadge } from './components/VerificationBadge';
+import { StoryHighlights } from './components/StoryHighlights';
+import { UserRecommendations } from './components/UserRecommendations';
+import { TrendingHashtags } from './components/TrendingHashtags';
+import { ExplorePage } from './components/ExplorePage';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
 
@@ -2497,311 +2501,40 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   key?: string
 }) {
   const { profile } = useAuth();
-  const { t } = useSettings();
-  const [trendingPosts, setTrendingPosts] = useState<Post[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [userSearch, setUserSearch] = useState('');
-  const [userResults, setUserResults] = useState<UserProfile[]>([]);
-  const [postResults, setPostResults] = useState<Post[]>([]);
-  const [searchablePosts, setSearchablePosts] = useState<Post[]>([]);
-  const [isUserSearching, setIsUserSearching] = useState(false);
-  const [privateAccountUids, setPrivateAccountUids] = useState<string[]>([]);
+  const [followingIds, setFollowingIds] = useState<string[]>([]);
 
-  // Load private account UIDs
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'users'));
-    const unsubscribe = safeOnSnapshot(q, (snapshot: any) => {
-      const privateUids = snapshot.docs
-        .map(doc => doc.data() as UserProfile)
-        .filter(u => u.isPrivate === true)
-        .map(u => u.uid);
-      setPrivateAccountUids(privateUids);
-    }, 'Не удалось загрузить список приватных аккаунтов:');
-    return unsubscribe;
+    const q = query(collection(db, 'follows'), where('followerId', '==', profile.uid));
+    const unsub = safeOnSnapshot(q, (snap: any) => {
+      setFollowingIds(snap.docs.map((d: any) => d.data().followingId));
+    }, 'Не удалось загрузить подписки:');
+    return unsub;
   }, [profile]);
 
-  useEffect(() => {
-    if (!profile) return;
-    // Important: Firestore rules can deny reads for "followers" visibility.
-    // If a query returns any unreadable document, the whole query fails with permission-denied.
-    // So we only query what we can always read: public posts + your own posts (merged client-side).
-    const merged = new Map<string, Post>();
-
-    const commit = () => {
-      let allPosts = Array.from(merged.values());
-      if (profile?.blockedUsers?.length) {
-        allPosts = allPosts.filter(p => !profile.blockedUsers?.includes(p.authorUid));
-      }
-      if (profile?.mutedUsers?.length) {
-        allPosts = allPosts.filter(p => !profile.mutedUsers?.includes(p.authorUid));
-      }
-      // Back-compat: treat missing `visibility` as public.
-      allPosts = allPosts.filter(p => {
-        const v = (p as any)?.visibility;
-        const effectiveVisibility = typeof v === 'string' ? v : 'public';
-        return effectiveVisibility === 'public' || p.authorUid === profile.uid;
-      });
-      allPosts.sort((a, b) => (Number((b as any).likes || 0) - Number((a as any).likes || 0)));
-      setTrendingPosts(allPosts.slice(0, 10));
-      setLoading(false);
-    };
-
-    const unsubscribers: Array<() => void> = [];
-
-    const qPublic = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(200));
-    unsubscribers.push(
-      safeOnSnapshot(qPublic, (s: any) => {
-        s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
-        commit();
-      }, 'Не удалось загрузить тренды:')
-    );
-
-    const qOwn = query(
-      collection(db, 'posts'),
-      where('authorUid', '==', profile.uid),
-      limit(40)
-    );
-    unsubscribers.push(
-      safeOnSnapshot(qOwn, (s: any) => {
-        s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
-        commit();
-      }, 'Не удалось загрузить свои посты (trending):')
-    );
-
-    return () => {
-      unsubscribers.forEach(fn => {
-        try { fn(); } catch {}
-      });
-    };
-  }, [profile, privateAccountUids]);
-
-  useEffect(() => {
-    if (!profile) return;
-    const merged = new Map<string, Post>();
-
-    const commit = () => {
-      let allPosts = Array.from(merged.values());
-      if (profile?.blockedUsers?.length) {
-        allPosts = allPosts.filter(post => !profile.blockedUsers?.includes(post.authorUid));
-      }
-      if (profile?.mutedUsers?.length) {
-        allPosts = allPosts.filter(post => !profile.mutedUsers?.includes(post.authorUid));
-      }
-      // Back-compat: treat missing `visibility` as public.
-      allPosts = allPosts.filter(p => {
-        const v = (p as any)?.visibility;
-        const effectiveVisibility = typeof v === 'string' ? v : 'public';
-        return effectiveVisibility === 'public' || p.authorUid === profile.uid;
-      });
-      allPosts.sort((a, b) => {
-        const aMs = (a.createdAt && typeof (a.createdAt as any).toMillis === 'function') ? (a.createdAt as any).toMillis() : 0;
-        const bMs = (b.createdAt && typeof (b.createdAt as any).toMillis === 'function') ? (b.createdAt as any).toMillis() : 0;
-        return bMs - aMs;
-      });
-      setSearchablePosts(allPosts.slice(0, SEARCH_POST_LIMIT));
-    };
-
-    const unsubscribers: Array<() => void> = [];
-
-    const qPublic = query(collection(db, 'posts'), limit(Math.max(200, SEARCH_POST_LIMIT * 4)));
-    unsubscribers.push(
-      safeOnSnapshot(qPublic, (s: any) => {
-        s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
-        commit();
-      }, 'Не удалось загрузить посты для поиска:')
-    );
-
-    const qOwn = query(
-      collection(db, 'posts'),
-      where('authorUid', '==', profile.uid),
-      limit(SEARCH_POST_LIMIT)
-    );
-    unsubscribers.push(
-      safeOnSnapshot(qOwn, (s: any) => {
-        s.docs.forEach((d: any) => merged.set(d.id, ({ id: d.id, ...d.data() } as Post)));
-        commit();
-      }, 'Не удалось загрузить свои посты (search):')
-    );
-
-    return () => {
-      unsubscribers.forEach(fn => {
-        try { fn(); } catch {}
-      });
-    };
-  }, [profile, privateAccountUids]);
-
-  useEffect(() => {
-    if (!profile) return;
-    if (userSearch.length < 2) {
-      setUserResults([]);
-      setPostResults([]);
-      return;
-    }
-    setUserResults([]);
-    const normalized = normalizeUsername(userSearch).toLowerCase();
-    const qName = query(
-      collection(db, 'users'),
-      where('displayName', '>=', userSearch),
-      where('displayName', '<=', userSearch + '\uf8ff'),
-      limit(6)
-    );
-    const qUsername = query(
-      collection(db, 'users'),
-      where('usernameLower', '>=', normalized),
-      where('usernameLower', '<=', normalized + '\uf8ff'),
-      limit(6)
-    );
-    const unsubName = safeOnSnapshot(qName, (s: any) => {
-      const nameResults = s.docs.map(d => d.data() as UserProfile);
-      setUserResults((prev) => mergeUniqueUsers([...nameResults, ...prev]).slice(0, 8));
-    }, 'Не удалось искать пользователей по имени:');
-    const unsubUsername = safeOnSnapshot(qUsername, (s: any) => {
-      const userResults = s.docs.map(d => d.data() as UserProfile);
-      setUserResults((prev) => mergeUniqueUsers([...userResults, ...prev]).slice(0, 8));
-    }, 'Не удалось искать пользователей по username:');
-    return () => { unsubName(); unsubUsername(); };
-  }, [userSearch]);
-
-  useEffect(() => {
-    if (userSearch.length < 2) return;
-    setPostResults(searchablePosts.filter(post => matchesPostSearch(post, userSearch)).slice(0, 6));
-  }, [searchablePosts, userSearch]);
-
-  const showSearchPanel = isUserSearching && userSearch.length >= 2;
-
   return (
-    <div className="max-w-4xl mx-auto py-20 px-4">
-      <h2 className="text-3xl font-bold mb-6 tracking-tight">{t('explore')}</h2>
-
-      <div className="mb-8 relative">
-        <div className="relative">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-          <input
-            value={userSearch}
-            onChange={(e) => setUserSearch(e.target.value)}
-            onFocus={() => setIsUserSearching(true)}
-            placeholder={t('searchEverything')}
-            className="w-full bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl pl-12 pr-4 py-3 focus:outline-none focus:ring-1 focus:ring-black dark:focus:ring-white transition-all shadow-sm"
-          />
-        </div>
-        {showSearchPanel && (
-          <div className="mt-3 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded-3xl shadow-xl overflow-hidden">
-            <div className="p-4 border-b border-gray-100 dark:border-zinc-800">
-              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">{t('searchPeople')}</div>
-            </div>
-            {userResults.length > 0 ? userResults.map(u => (
-              <button
-                key={u.uid}
-                onClick={() => {
-                  onOpenProfile(u.uid);
-                  setUserSearch('');
-                  setIsUserSearching(false);
-                }}
-                className="w-full flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
-              >
-                <img src={u.photoURL || undefined} loading="lazy" className="w-9 h-9 rounded-full object-cover" referrerPolicy="no-referrer" />
-                <div className="min-w-0">
-	                  <div className="text-sm font-bold truncate inline-flex items-center gap-1">
-	                    <span>{u.displayName}</span>
-	                    <AccountStatusBadges
-	                      verified={u.verified}
-	                      requiresReview={u.requiresReview}
-	                      accountStatus={u.accountStatus}
-	                      verifiedTitle={t('verified')}
-	                      reviewTitle={t('accountUnderReview')}
-	                      restrictedTitle={t('accountRestricted')}
-	                      blockedTitle={t('accountBlocked')}
-	                    />
-	                  </div>
-                  <div className="text-[10px] text-gray-400 truncate">{getUserSecondaryLabel(u, profile?.uid, t)}</div>
-                </div>
-              </button>
-            )) : (
-              <div className="p-4 text-center text-xs text-gray-400">{t('noUsersFound')}</div>
-            )}
-            <div className="p-4 border-y border-gray-100 dark:border-zinc-800 bg-gray-50/70 dark:bg-zinc-950/60">
-              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.24em]">{t('searchPosts')}</div>
-            </div>
-            {postResults.length > 0 ? postResults.map(post => (
-              <button
-                key={post.id}
-                onClick={() => {
-                  onOpenPost(post);
-                  setUserSearch('');
-                  setIsUserSearching(false);
-                }}
-                className="w-full p-4 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors text-left"
-              >
-                <div className="flex items-center gap-3 mb-2">
-                  <img src={post.authorPhoto} loading="lazy" className="w-8 h-8 rounded-full object-cover" referrerPolicy="no-referrer" />
-                  <div className="min-w-0">
-	                    <div className="text-sm font-bold truncate inline-flex items-center gap-1">
-	                      <span>{post.authorName}</span>
-	                      <AccountStatusBadges
-	                        verified={post.authorVerified}
-	                        requiresReview={post.authorRequiresReview}
-	                        accountStatus={post.authorAccountStatus}
-	                        verifiedTitle={t('verified')}
-	                        reviewTitle={t('accountUnderReview')}
-	                        restrictedTitle={t('accountRestricted')}
-	                        blockedTitle={t('accountBlocked')}
-	                      />
-	                    </div>
-                    <div className="text-[10px] text-gray-400 truncate">{formatUsername(post.authorUsername)}</div>
-                  </div>
-                </div>
-                <div className="text-sm text-gray-600 dark:text-gray-300 line-clamp-2">{post.content}</div>
-              </button>
-            )) : (
-              <div className="p-4 text-center text-xs text-gray-400">{t('noPostsFound')}</div>
-            )}
-          </div>
-        )}
-        {isUserSearching && (
-          <div className="fixed inset-0 z-[-1]" onClick={() => setIsUserSearching(false)} />
-        )}
-      </div>
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="space-y-6">
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest">{t('popularPosts')}</h3>
-          {loading ? (
-            <div className="flex justify-center py-10">
-              <div className="w-6 h-6 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
-            </div>
-          ) : (
-            trendingPosts.map(post => (
-              <PostCard 
-                key={post.id} 
-                post={post} 
-                onOpen={onOpenPost} 
-                onOpenProfile={onOpenProfile} 
-                onOpenImage={onOpenImage}
-                onShowLikes={onShowLikes}
-              />
-            ))
-          )}
-        </div>
-        
-        <aside className="space-y-6">
-          <WhoToFollow onOpenProfile={onOpenProfile} />
-          <div className="bg-white dark:bg-zinc-900 p-6 rounded-3xl border border-gray-100 dark:border-zinc-800 shadow-sm">
-            <h3 className="font-bold text-lg mb-4 tracking-tight">{t('communityStats')}</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 bg-gray-50 dark:bg-zinc-800/50 rounded-2xl">
-                <div className="text-2xl font-bold">1.2k</div>
-                <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('members')}</div>
-              </div>
-              <div className="p-4 bg-gray-50 dark:bg-zinc-800/50 rounded-2xl">
-                <div className="text-2xl font-bold">8.5k</div>
-                <div className="text-[10px] text-gray-400 uppercase tracking-widest">{t('postsStat')}</div>
-              </div>
-            </div>
-          </div>
-        </aside>
-      </div>
-    </div>
+    <ExplorePage
+      currentUserId={profile?.uid || ''}
+      followingIds={followingIds}
+      onFollow={async (userId) => {
+        if (!profile) return;
+        await setDoc(doc(collection(db, 'follows'), `${profile.uid}_${userId}`), {
+          followerId: profile.uid,
+          followingId: userId,
+          createdAt: serverTimestamp()
+        });
+        setFollowingIds(prev => [...prev, userId]);
+      }}
+      onUnfollow={async (userId) => {
+        if (!profile) return;
+        await deleteDoc(doc(collection(db, 'follows'), `${profile.uid}_${userId}`));
+        setFollowingIds(prev => prev.filter(id => id !== userId));
+      }}
+      onViewProfile={(uid) => onOpenProfile(uid)}
+      onSelectTag={(tag) => {
+        onOpenPost({ id: tag } as any);
+      }}
+    />
   );
 }
 
@@ -5602,6 +5335,8 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
           </p>
         </div>
 
+        <TrendingHashtags onSelectTag={(tag) => setSearchHashtag(tag)} />
+
         <WhoToFollow onOpenProfile={onOpenProfile} />
       </aside>
     </div>
@@ -6579,6 +6314,15 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                 {currentProfile?.mutedUsers?.includes(targetProfile.uid) ? t('muted') : t('mute')}
               </button>
             </div>
+          </div>
+        )}
+
+        {isOwnProfile && (
+          <div className="mt-6">
+            <StoryHighlights
+              highlights={[]}
+              onAdd={() => {}}
+            />
           </div>
         )}
 
