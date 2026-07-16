@@ -112,6 +112,7 @@ import { ExplorePage } from './components/ExplorePage';
 import { PostTemplates } from './components/PostTemplates';
 import { ContentFilters } from './components/ContentFilters';
 import { ReadingList } from './components/ReadingList';
+import { BookmarkFolders } from './components/BookmarkFolders';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
 
@@ -159,6 +160,14 @@ interface QueuedAction {
   data: any;
   timestamp: number;
   retryCount: number;
+}
+
+interface Draft {
+  id: string;
+  content: string;
+  imageUrls: string[];
+  createdAt: number;
+  updatedAt: number;
 }
 
 interface Event {
@@ -713,6 +722,14 @@ interface Notification {
   reason?: string;
 }
 
+interface BookmarkFolder {
+  id: string;
+  name: string;
+  color: string;
+  postIds: string[];
+  createdAt: number;
+}
+
 interface VerificationNotification {
   id: string;
   type: 'sent' | 'approved' | 'rejected';
@@ -939,6 +956,9 @@ const translations = {
     proTip: 'Pro Tip',
     proTipText: 'Use hashtags to make your posts discoverable by everyone in the community!',
     bookmarksEmpty: 'No bookmarks yet. Save posts to see them here!',
+    folderCreated: 'Folder created',
+    folderDeleted: 'Folder deleted',
+    folderRenamed: 'Folder renamed',
     editBio: 'Edit Bio',
     noBio: 'No bio yet',
     follow: 'Follow',
@@ -1365,6 +1385,9 @@ const translations = {
     proTip: 'Подсказка',
     proTipText: 'Используйте хэштеги, чтобы ваши посты было проще найти!',
     bookmarksEmpty: 'Пока нет закладок. Сохраняйте посты, чтобы видеть их здесь!',
+    folderCreated: 'Папка создана',
+    folderDeleted: 'Папка удалена',
+    folderRenamed: 'Папка переименована',
     editBio: 'Редактировать',
     noBio: 'Пока нет описания',
     follow: 'Подписаться',
@@ -2557,13 +2580,19 @@ function Explore({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes }: {
   );
 }
 
-function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes, readingList, setReadingList }: {
+function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes, readingList, setReadingList, bookmarkFolders, selectedBookmarkFolderId, onSelectBookmarkFolder, onCreateBookmarkFolder, onDeleteBookmarkFolder, onRenameBookmarkFolder }: {
   onOpenPost: (post: Post) => void,
   onOpenProfile: (uid: string) => void,
   onOpenImage: (url: string) => void,
   onShowLikes: (postId: string) => void,
   readingList?: SavedPost[],
   setReadingList?: (posts: SavedPost[] | ((prev: SavedPost[]) => SavedPost[])) => void,
+  bookmarkFolders?: BookmarkFolder[],
+  selectedBookmarkFolderId?: string | null,
+  onSelectBookmarkFolder?: (folderId: string | null) => void,
+  onCreateBookmarkFolder?: (name: string, color: string) => void,
+  onDeleteBookmarkFolder?: (folderId: string) => void,
+  onRenameBookmarkFolder?: (folderId: string, name: string) => void,
   key?: string
 }) {
   const { profile } = useAuth();
@@ -2639,6 +2668,16 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes, readin
   return (
     <div className="max-w-xl mx-auto py-20 px-4">
       <h2 className="text-3xl font-bold mb-8 tracking-tight">{t('bookmarks')}</h2>
+      <div className="mb-6">
+        <BookmarkFolders
+          folders={bookmarkFolders || []}
+          selectedFolderId={selectedBookmarkFolderId}
+          onSelectFolder={onSelectBookmarkFolder}
+          onCreateFolder={onCreateBookmarkFolder}
+          onDeleteFolder={onDeleteBookmarkFolder}
+          onRenameFolder={onRenameBookmarkFolder}
+        />
+      </div>
       {loading ? (
         <div className="flex justify-center py-10">
           <div className="w-6 h-6 border-2 border-black dark:border-white border-t-transparent animate-spin rounded-full" />
@@ -2650,9 +2689,9 @@ function Bookmarks({ onOpenPost, onOpenProfile, onOpenImage, onShowLikes, readin
               key={post.id}
               readingList={readingList}
               setReadingList={setReadingList}
-              post={post} 
-              onOpen={onOpenPost} 
-              onOpenProfile={onOpenProfile} 
+              post={post}
+              onOpen={onOpenPost}
+              onOpenProfile={onOpenProfile}
               onOpenImage={onOpenImage}
               onShowLikes={onShowLikes}
             />
@@ -6529,13 +6568,9 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
                     key={post.id}
                     readingList={readingList}
                     setReadingList={setReadingList}
-                    readingList={readingList}
-                    setReadingList={setReadingList}
-                    readingList={readingList}
-                    setReadingList={setReadingList}
-                    post={post} 
-                    onOpen={onOpenPost} 
-                    onOpenProfile={onBack ? (uid) => onOpenProfile?.(uid) : undefined} 
+                    post={post}
+                    onOpen={onOpenPost}
+                    onOpenProfile={onBack ? (uid) => onOpenProfile?.(uid) : undefined}
                     onHashtagClick={onHashtagClick}
                     onOpenImage={onOpenImage}
                     onShowLikes={onShowLikes}
@@ -10255,8 +10290,10 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 		  const [contentFilter, setContentFilter] = useState<'all' | 'images' | 'videos' | 'text' | 'hashtags'>('all');
 		  const [readingList, setReadingList] = useState<SavedPost[]>([]);
 		  const [postTemplates, setPostTemplates] = useState<PostTemplate[]>([]);
+		  const [bookmarkFolders, setBookmarkFolders] = useState<BookmarkFolder[]>([]);
+		  const [selectedBookmarkFolderId, setSelectedBookmarkFolderId] = useState<string | null>(null);
 
-	  const recordPostView = async (postId: string) => {
+		 const recordPostView = async (postId: string) => {
 	    if (!user || !postId) return;
 	    const key = `${user.uid}:${postId}`;
 	    if (seenPostViewsRef.current.has(key)) return;
@@ -10495,6 +10532,57 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
     setSelectedImage(url);
   };
 
+  const onCreateBookmarkFolder = async (name: string, color: string) => {
+    if (!user) return;
+    try {
+      const folderRef = doc(collection(db, 'users', user.uid, 'bookmarkFolders'));
+      const folder: BookmarkFolder = {
+        id: folderRef.id,
+        name,
+        color,
+        postIds: [],
+        createdAt: Date.now(),
+      };
+      await setDoc(folderRef, folder);
+      setBookmarkFolders(prev => [...prev, folder]);
+      showToast(t('folderCreated'), 'success');
+    } catch (error) {
+      console.error('Error creating folder:', error);
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const onDeleteBookmarkFolder = async (folderId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'users', user.uid, 'bookmarkFolders', folderId));
+      setBookmarkFolders(prev => prev.filter(f => f.id !== folderId));
+      if (selectedBookmarkFolderId === folderId) {
+        setSelectedBookmarkFolderId(null);
+      }
+      showToast(t('folderDeleted'), 'success');
+    } catch (error) {
+      console.error('Error deleting folder:', error);
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const onRenameBookmarkFolder = async (folderId: string, name: string) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'bookmarkFolders', folderId), { name });
+      setBookmarkFolders(prev => prev.map(f => f.id === folderId ? { ...f, name } : f));
+      showToast(t('folderRenamed'), 'success');
+    } catch (error) {
+      console.error('Error renaming folder:', error);
+      showToast(t('genericError'), 'error');
+    }
+  };
+
+  const onSelectBookmarkFolder = (folderId: string | null) => {
+    setSelectedBookmarkFolderId(folderId);
+  };
+
   const disableMaintenanceNow = async () => {
     if (!isAdmin || !user) return;
     if (disablingMaintenance) return;
@@ -10695,10 +10783,15 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
               onShowLikes={setLikesPostId}
               readingList={readingList}
               setReadingList={setReadingList}
+              bookmarkFolders={bookmarkFolders}
+              selectedBookmarkFolderId={selectedBookmarkFolderId}
+              onSelectBookmarkFolder={onSelectBookmarkFolder}
+              onCreateBookmarkFolder={onCreateBookmarkFolder}
+              onDeleteBookmarkFolder={onDeleteBookmarkFolder}
+              onRenameBookmarkFolder={onRenameBookmarkFolder}
             />
           )}
-          {view === 'notifications' && <Notifications key="notifications" onOpenPost={handleOpenPost}
-              onOpenImage={handleOpenImage} />}
+          {view === 'notifications' && <Notifications key="notifications" onOpenPost={handleOpenPost} />}
           {view === 'profile' && (
             <Profile
               key="profile"
@@ -10733,6 +10826,7 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
               onBack={() => setView('feed')}
               onOpenProfile={handleOpenProfile}
               onHashtagClick={handleHashtagClick}
+              onOpenImage={handleOpenImage}
               onShowLikes={setLikesPostId}
               readingList={readingList}
               setReadingList={setReadingList}
