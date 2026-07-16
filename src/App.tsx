@@ -97,6 +97,7 @@ import {
 import { GifPicker } from './components/GifPicker';
 import { VirtualPostList } from './components/VirtualPostList';
 import { ProfileAnalytics } from './components/Profile/ProfileAnalytics';
+import { ImageLightbox } from './components/ImageLightbox';
 import { motion, AnimatePresence } from 'motion/react';
 import { formatDistanceToNow, format, isSameDay } from 'date-fns';
 
@@ -4387,6 +4388,9 @@ function Feed({ onOpenPost, onOpenProfile, searchHashtag: externalHashtag, onCle
    const [showPollOptions, setShowPollOptions] = useState(false);
    const [showGifPicker, setShowGifPicker] = useState(false);
    const [showScheduleOptions, setShowScheduleOptions] = useState(false);
+  const [lightboxImages, setLightboxImages] = useState<string[]>([]);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [showLightbox, setShowLightbox] = useState(false);
    const [scheduledAt, setScheduledAt] = useState<Date | null>(null);
    	   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
    	   const [pollError, setPollError] = useState<string | null>(null);
@@ -10788,7 +10792,8 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
 	          {view === 'feed' && (
 	            <Feed 
 	              key="feed"
-	              onOpenPost={handleOpenPost} 
+	              onOpenPost={handleOpenPost}
+              onOpenImage={openLightbox} 
 	              onOpenProfile={handleOpenProfile} 
 	              searchHashtag={activeHashtag}
 	              onClearHashtag={() => setActiveHashtag(null)}
@@ -10801,7 +10806,8 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
           {view === 'explore' && (
             <Explore 
               key="explore"
-              onOpenPost={handleOpenPost} 
+              onOpenPost={handleOpenPost}
+              onOpenImage={openLightbox} 
               onOpenProfile={handleOpenProfile} 
               onOpenImage={handleOpenImage}
               onShowLikes={setLikesPostId}
@@ -10810,17 +10816,20 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
           {view === 'bookmarks' && (
             <Bookmarks 
               key="bookmarks"
-              onOpenPost={handleOpenPost} 
+              onOpenPost={handleOpenPost}
+              onOpenImage={openLightbox} 
               onOpenProfile={handleOpenProfile} 
               onOpenImage={handleOpenImage}
               onShowLikes={setLikesPostId}
             />
           )}
-          {view === 'notifications' && <Notifications key="notifications" onOpenPost={handleOpenPost} />}
+          {view === 'notifications' && <Notifications key="notifications" onOpenPost={handleOpenPost}
+              onOpenImage={openLightbox} />}
           {view === 'profile' && (
             <Profile 
               key="profile"
-              onOpenPost={handleOpenPost} 
+              onOpenPost={handleOpenPost}
+              onOpenImage={openLightbox} 
               onOpenProfile={handleOpenProfile} 
               onHashtagClick={handleHashtagClick} 
               onOpenImage={handleOpenImage}
@@ -10832,7 +10841,8 @@ function Notifications({ onOpenPost }: { onOpenPost: (post: Post) => void, key?:
             <Profile 
               key={`user_${selectedUser}`}
               userId={selectedUser} 
-              onOpenPost={handleOpenPost} 
+              onOpenPost={handleOpenPost}
+              onOpenImage={openLightbox} 
               onOpenProfile={handleOpenProfile} 
               onHashtagClick={handleHashtagClick} 
               onBack={() => setView('feed')} 
