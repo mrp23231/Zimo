@@ -5607,6 +5607,8 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
   const [showVerifiedInfo, setShowVerifiedInfo] = useState(false);
   const [showVerifiedHow, setShowVerifiedHow] = useState(false);
   const [animateVerifiedBadge, setAnimateVerifiedBadge] = useState(false);
+  const [currentTheme, setCurrentTheme] = useState('default');
+  const [currentStatus, setCurrentStatus] = useState<UserStatus | null>(null);
   const [showProfileThemes, setShowProfileThemes] = useState(false);
   const [showStatusMood, setShowStatusMood] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
@@ -7593,7 +7595,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         onClose={() => setShowProfileThemes(false)}
         currentTheme={currentTheme}
         onThemeChange={(theme) => setCurrentTheme(theme.id)}
-        userId={userId || profile?.uid || ''}
+        userId={userId || targetProfile?.uid || ''}
         showToast={showToast}
       />
 
@@ -7602,7 +7604,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         onClose={() => setShowStatusMood(false)}
         currentStatus={currentStatus || undefined}
         onStatusChange={setCurrentStatus}
-        userId={userId || profile?.uid || ''}
+        userId={userId || targetProfile?.uid || ''}
         showToast={showToast}
       />
 
@@ -7615,14 +7617,14 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       <AudienceInsights
         isOpen={showAudienceInsights}
         onClose={() => setShowAudienceInsights(false)}
-        userId={userId || profile?.uid || ''}
+        userId={userId || targetProfile?.uid || ''}
         userPosts={userPosts}
       />
 
       <PhotoAlbums
         isOpen={showPhotoAlbums}
         onClose={() => setShowPhotoAlbums(false)}
-        userId={userId || profile?.uid || ''}
+        userId={userId || targetProfile?.uid || ''}
         albums={photoAlbums}
         onAlbumsChange={setPhotoAlbums}
         showToast={showToast}
@@ -7631,7 +7633,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
       <BirthdayReminders
         isOpen={showBirthdays}
         onClose={() => setShowBirthdays(false)}
-        userId={userId || profile?.uid || ''}
+        userId={userId || targetProfile?.uid || ''}
         userBirthdate={targetProfile?.birthdate}
         showToast={showToast}
       />
@@ -7640,7 +7642,7 @@ function Profile({ userId, onOpenPost, onOpenProfile, onHashtagClick, onBack, on
         <CommunityModeration
           isOpen={showCommunityModeration}
           onClose={() => setShowCommunityModeration(false)}
-          userId={userId || profile?.uid || ''}
+          userId={userId || targetProfile?.uid || ''}
           isAdmin={isAdmin}
           showToast={showToast}
         />
